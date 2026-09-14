@@ -1,0 +1,30 @@
+#cloud-config
+# Paste into "Show advanced options -> Initialization script" when creating
+# the OCI instance, or run the commands by hand on an existing one.
+#
+# Ubuntu images on OCI ship with an iptables INPUT chain that REJECTs
+# everything except SSH. Opening the port in the OCI security list alone is
+# NOT enough -- that is the single most common reason a tracker cannot
+# connect. This script opens the host firewall; you must still add the
+# ingress rule in the console.
+
+package_update: true
+packages:
+  - docker.io
+  - iptables-persistent
+
+write_files:
+  - path: /etc/gps-gateway.env
+    permissions: "0600"
+    owner: root:root
+    content: |
+      # Supabase SESSION pooler (port 5432), not the 6543 transaction pooler.
+      PG_DSN=postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
+
+runcmd:
+  # Host firewall: accept new TCP connections on the gateway port. Inserted
+  # at the top of INPUT so it lands before the REJECT rule.
+  - iptables -I INPUT 1 -p tcp --dport 5023 -m conntrack --ctstate NEW -j ACCEPT
+  - netfilter-persistent save
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu

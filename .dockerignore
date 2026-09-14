@@ -1,0 +1,15 @@
+.git/
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+.venv/
+venv/
+tests/
+tools/
+postman/
+api/
+*.md
+openapi.json
+vercel.json
+.vercelignore

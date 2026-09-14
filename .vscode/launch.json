@@ -1,0 +1,76 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Gateway (Postgres)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "gps_gateway",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PG_DSN": "postgresql://postgres:postgres@localhost:5432/trackit"
+      }
+    },
+    {
+      "name": "Gateway (log sink)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "gps_gateway",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONUNBUFFERED": "1", "GATEWAY_SINK": "log" }
+    },
+    {
+      "name": "REST API (Postgres)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "api",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PG_DSN": "postgresql://postgres:postgres@localhost:5432/trackit",
+        "INGEST_API_KEY": "dev"
+      }
+    },
+    {
+      "name": "REST API (in-memory)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "api",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "API_BACKEND": "memory",
+        "INGEST_API_KEY": "dev"
+      }
+    },
+    {
+      "name": "Simulate device",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/simulate_device.py",
+      "args": ["--pings", "5", "--interval", "1"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unittest",
+      "args": ["discover", "-s", "tests", "-t", "."],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "All services",
+      "configurations": ["Gateway (Postgres)", "REST API (Postgres)"]
+    }
+  ]
+}

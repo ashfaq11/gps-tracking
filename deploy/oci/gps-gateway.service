@@ -1,0 +1,41 @@
+# systemd unit for running the gateway without Docker.
+#
+#   sudo cp deploy/oci/gps-gateway.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gps-gateway
+#
+# Expects the repo at /opt/gps-tracking and a venv at /opt/gps-tracking/.venv
+# with asyncpg installed.
+
+[Unit]
+Description=GT06 GPS ingestion gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gateway
+Group=gateway
+WorkingDirectory=/opt/gps-tracking
+EnvironmentFile=/etc/gps-gateway.env
+Environment=PYTHONUNBUFFERED=1
+Environment=GATEWAY_HOST=0.0.0.0
+Environment=GATEWAY_PORT=5023
+Environment=GATEWAY_SINK=postgres
+ExecStart=/opt/gps-tracking/.venv/bin/python -m gps_gateway
+
+Restart=always
+RestartSec=5
+
+# This process is exposed directly to the internet; give it nothing it does
+# not need.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

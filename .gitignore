@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+openapi.json
+.DS_Store
+.claude/
+
+# Ad-hoc table exports (e.g. DBeaver's users_202609120435.sql). They hold real
+# rows -- password hashes, emails, session hashes, location history -- and
+# must never be committed. The schema lives in sql/schema.sql only.
+sql/*_[0-9]*.sql

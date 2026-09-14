@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="All services" type="CompoundRunConfigurationType">
+    <toRun name="Gateway (Postgres)" type="PythonConfigurationType" />
+    <toRun name="REST API (Postgres)" type="PythonConfigurationType" />
+    <method v="2" />
+  </configuration>
+</component>

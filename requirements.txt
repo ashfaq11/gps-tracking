@@ -1,0 +1,13 @@
+# Runtime dependencies for the REST API. Vercel installs this file, so keep
+# it to what the deployed function actually needs -- uvicorn and friends only
+# add cold-start weight there.
+fastapi>=0.110
+asyncpg>=0.29
+# Password hashing for dashboard accounts. A compiled wheel, so it does add
+# cold-start weight -- but hand-rolling a KDF is the one place where saving a
+# dependency is not worth it.
+bcrypt>=4.1
+# Web Push (see api/push.py). Only exercised by the vehicle-motion listener,
+# which needs a long-running process and therefore never runs on Vercel --
+# but requirements.txt is shared with local/Docker deployments, where it does.
+pywebpush>=2.0

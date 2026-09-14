@@ -1,0 +1,13 @@
+# The gateway is a long-lived TCP server; it deploys to Fly.io, not here.
+gps_gateway/
+Dockerfile
+fly.toml
+.dockerignore
+
+tests/
+tools/
+postman/
+sql/
+.idea/
+.vscode/
+gateway.py
