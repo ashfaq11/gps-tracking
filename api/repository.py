@@ -73,6 +73,21 @@ class LocationRepository(Protocol):
 
     async def latest_for_device(self, device_id: str) -> LocationOut | None: ...
 
+    async def latest_for_devices(
+        self, device_ids: frozenset[str] | None = None
+    ) -> dict[str, LocationOut]:
+        """
+        One round trip's worth of `latest_for_device`, for every id in
+        `device_ids` (or every device that has ever reported, if None --
+        same "no filter" meaning as `list_devices`/`summary` below). A
+        device with no fixes, or a lapsed subscription, is simply absent
+        from the result rather than mapped to None -- there is no reason
+        for a caller polling a whole fleet to pay for N HTTP requests
+        (and N round trips through this same query) when one query already
+        groups by device_id.
+        """
+        ...
+
     async def history_for_device(
         self, device_id: str, limit: int, since: datetime | None, until: datetime | None = None
     ) -> list[LocationOut]: ...
@@ -178,6 +193,20 @@ class InMemoryLocationRepository:
             return None
         rows = [r for r in self._rows if r.device_id == device_id]
         return max(rows, key=lambda r: (r.received_at, r.id)) if rows else None
+
+    async def latest_for_devices(
+        self, device_ids: frozenset[str] | None = None
+    ) -> dict[str, LocationOut]:
+        by_device: dict[str, LocationOut] = {}
+        for row in self._rows:
+            if device_ids is not None and row.device_id not in device_ids:
+                continue
+            if not self._sub_active(row.device_id):
+                continue
+            current = by_device.get(row.device_id)
+            if current is None or (row.received_at, row.id) > (current.received_at, current.id):
+                by_device[row.device_id] = row
+        return by_device
 
     async def history_for_device(
         self, device_id: str, limit: int, since: datetime | None, until: datetime | None = None
@@ -409,6 +438,29 @@ class PostgresLocationRepository:
                 device_id,
             )
         return LocationOut(**dict(row)) if row else None
+
+    async def latest_for_devices(
+        self, device_ids: frozenset[str] | None = None
+    ) -> dict[str, LocationOut]:
+        # DISTINCT ON (device_id), with the matching ORDER BY, is Postgres's
+        # per-group "top 1 row" -- one query and one pass of the
+        # (device_id, received_at DESC) index instead of N round trips
+        # through latest_for_device, one per device, the way a caller
+        # polling a whole fleet otherwise has to.
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT DISTINCT ON (dl.device_id) {_COLUMNS} FROM device_locations dl
+                WHERE ($1::text[] IS NULL OR dl.device_id = ANY($1))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM device_subscriptions ds
+                      WHERE ds.device_id = dl.device_id AND ds.subscription_end_date <= now()
+                  )
+                ORDER BY dl.device_id, dl.received_at DESC, dl.id DESC
+                """,
+                list(device_ids) if device_ids is not None else None,
+            )
+        return {row["device_id"]: LocationOut(**dict(row)) for row in rows}
 
     async def history_for_device(
         self, device_id: str, limit: int, since: datetime | None, until: datetime | None = None

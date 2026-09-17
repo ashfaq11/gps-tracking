@@ -101,6 +101,31 @@ async def list_devices(
 
 
 @router.get(
+    "/latest",
+    response_model=dict[str, LocationOut],
+    summary="Most recent fix for every device this account can see, in one call",
+)
+async def latest_all(
+    user: AuthenticatedUser = Depends(current_user),
+    repo: LocationRepository = Depends(get_repository),
+) -> dict[str, LocationOut]:
+    """
+    The bulk form of `GET /devices/{device_id}/latest`: a dashboard polling
+    a whole fleet was firing one request per device every refresh --
+    N round trips (and N queries) for data one query already groups by
+    device_id. This is that one query, keyed by device_id.
+
+    A device that is unassigned, has never reported, or has a lapsed
+    subscription is simply absent from the result rather than a 404 or a
+    null entry -- there is no single device_id here for either of those to
+    attach to. `GET /devices` (which lists every device regardless) is how
+    to tell "not in this response because it has no fixes" apart from "not
+    in this response because it does not exist".
+    """
+    return await repo.latest_for_devices(_scope(user))
+
+
+@router.get(
     "/{device_id}/latest",
     response_model=LocationOut,
     summary="Most recent fix for a device",

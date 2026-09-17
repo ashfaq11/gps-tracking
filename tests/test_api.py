@@ -129,6 +129,44 @@ class TestReadEndpoints(ApiTestCase):
         response = await self.client.get(f"{BASE}/devices/nosuchdevice/latest", headers=self.auth())
         self.assertEqual(response.status_code, 404)
 
+    async def test_latest_all_returns_one_row_per_device_keyed_by_id(self):
+        await self.ingest()
+        await self.ingest({**FIX, "latitude": 13.5})  # a second fix, same device
+        await self.ingest({**FIX, "device_id": "d2", "latitude": 5.0})
+
+        response = await self.client.get(f"{BASE}/devices/latest", headers=self.auth())
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertCountEqual(body.keys(), [FIX["device_id"], "d2"])
+        # The newest of the two fixes for FIX['device_id'], not the first.
+        self.assertAlmostEqual(body[FIX["device_id"]]["latitude"], 13.5)
+        self.assertAlmostEqual(body["d2"]["latitude"], 5.0)
+
+    async def test_latest_all_omits_a_device_with_no_fixes(self):
+        response = await self.client.get(f"{BASE}/devices/latest", headers=self.auth())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {})
+
+    async def test_latest_all_is_scoped_to_a_non_admin_accounts_own_devices(self):
+        await self.ingest()  # FIX['device_id'], not assigned to the dispatcher below
+        await self.ingest({**FIX, "device_id": "d2", "latitude": 5.0})
+        await self.client.post(
+            f"{BASE}/users",
+            json={"username": "dispatcher", "password": "dispatch123", "role": "user", "devices": ["d2"]},
+            headers=self.auth(),
+        )
+        token = (
+            await self.client.post(
+                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+            )
+        ).json()["token"]
+
+        response = await self.client.get(f"{BASE}/devices/latest", headers=self.auth(token))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.json().keys()), ["d2"])
+
     async def test_history_is_newest_first(self):
         for lat in (1.0, 2.0, 3.0):
             await self.ingest({**FIX, "latitude": lat})
