@@ -204,6 +204,7 @@ class DeviceSubscriptionOut(BaseModel):
                     "subscription_status": "active",
                     "installed_at": "2026-01-15T00:00:00Z",
                     "sim_expiry_date": "2027-01-15T00:00:00Z",
+                    "secret_code": "abc123def456",
                 }
             ]
         }
@@ -223,6 +224,10 @@ class DeviceSubscriptionOut(BaseModel):
         default=None,
         description="When the tracker's cellular SIM / data plan runs out. Informational -- "
         "unlike subscription_end_date this never hides the device.",
+    )
+    secret_code: str | None = Field(
+        default=None,
+        description="Unique code for anonymous live location access. Generate one with POST /devices/{device_id}/secret-code",
     )
 
 
@@ -582,3 +587,54 @@ class VapidKeyOut(BaseModel):
     """Public only -- the private key never leaves the server."""
 
     public_key: str
+
+
+class SecretCodeOut(BaseModel):
+    """Generated secret code for anonymous device location access."""
+
+    device_id: str
+    secret_code: str = Field(description="Share this code to allow anonymous live location access.")
+
+
+# Letters, digits, dash, underscore -- URL-safe with no encoding needed, so
+# the code can be dropped straight into a shareable link's path segment.
+SECRET_CODE_PATTERN = r"^[A-Za-z0-9_-]+$"
+
+
+class SecretCodeUpdate(BaseModel):
+    """
+    Set a specific secret code rather than generating a random one -- e.g. a
+    short human-memorable code for a route printed on a physical sign.
+    Omit `secret_code` (or send `{}`) to auto-generate one instead, same as
+    the plain POST.
+    """
+
+    model_config = {"json_schema_extra": {"examples": [{"secret_code": "route-42-bus"}]}}
+
+    secret_code: str | None = Field(
+        default=None,
+        min_length=4,
+        max_length=64,
+        pattern=SECRET_CODE_PATTERN,
+        description="A custom code. Letters, digits, dash, underscore. Must be unique across "
+        "all devices. Omit to auto-generate a random one instead.",
+    )
+
+
+class DeviceLocationBySecretCode(BaseModel):
+    """Vehicle and location accessible via secret code, no login required."""
+
+    device_id: str
+    name: str | None = Field(
+        default=None, description="Vehicle display name, null if not set."
+    )
+    icon: VehicleIcon = Field(
+        default=DEFAULT_VEHICLE_ICON, description="Vehicle shape for map display."
+    )
+    latitude: float
+    longitude: float
+    speed_kmh: int | None = None
+    course_deg: int | None = None
+    gps_fixed: bool | None = None
+    satellites: int | None = None
+    received_at: datetime = Field(description="When the latest position was received.")

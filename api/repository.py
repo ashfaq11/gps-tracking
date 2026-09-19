@@ -60,12 +60,18 @@ class DeviceDetails(NamedTuple):
     sim_expiry_date: datetime | None
     name: str | None
     icon: VehicleIcon
+    secret_code: str | None = None
 
 
 # Marks "this field was not sent" for set_device_profile, distinct from an
 # explicit `None` -- which for `name` means "clear it back to the device id".
 # A plain default of `None` could not tell the two apart.
 _UNSET = object()
+
+
+class SecretCodeTaken(Exception):
+    """Raised by generate_secret_code when a caller-chosen code is already
+    in use by a different device."""
 
 
 class LocationRepository(Protocol):
@@ -150,6 +156,16 @@ class LocationRepository(Protocol):
         self, device_id: str, *, name: object = _UNSET, icon: object = _UNSET
     ) -> None: ...
 
+    async def generate_secret_code(self, device_id: str, *, code: str | None = None) -> str:
+        """
+        Set device_id's secret code to `code`, or a random one if omitted,
+        replacing whatever it had before. Raises SecretCodeTaken if `code`
+        already belongs to a different device.
+        """
+        ...
+
+    async def device_id_by_secret_code(self, secret_code: str) -> str | None: ...
+
 
 class InMemoryLocationRepository:
     """Development and test backend. Not durable, not shared across workers."""
@@ -157,7 +173,7 @@ class InMemoryLocationRepository:
     def __init__(self):
         self._rows: list[LocationOut] = []
         self._next_id = 1
-        # device_id -> {"subscription_end_date":, "installed_at":, "sim_expiry_date":, "name":}
+        # device_id -> {"subscription_end_date":, "installed_at":, "sim_expiry_date":, "name":, "secret_code":}
         self._device_subscriptions: dict[str, dict] = {}
         self._device_subscription_history: list[dict] = []
         self._next_sub_history_id = 1
@@ -165,6 +181,8 @@ class InMemoryLocationRepository:
         # rather than a field on _device_subscriptions -- same "separate,
         # purely cosmetic concern" reasoning as the real table.
         self._device_markers: dict[str, VehicleIcon] = {}
+        # secret_code -> device_id mapping
+        self._secret_codes: dict[str, str] = {}
 
     def _sub_end_date(self, device_id: str) -> datetime | None:
         return self._device_subscriptions.get(device_id, {}).get("subscription_end_date")
@@ -317,13 +335,14 @@ class InMemoryLocationRepository:
         row = self._device_subscriptions.get(device_id)
         icon = self._device_markers.get(device_id, DEFAULT_VEHICLE_ICON)
         if row is None:
-            return DeviceDetails(None, None, None, None, icon)
+            return DeviceDetails(None, None, None, None, icon, None)
         return DeviceDetails(
             subscription_end_date=row.get("subscription_end_date"),
             installed_at=row.get("installed_at"),
             sim_expiry_date=row.get("sim_expiry_date"),
             name=row.get("name"),
             icon=icon,
+            secret_code=row.get("secret_code"),
         )
 
     async def set_device_profile(
@@ -395,6 +414,22 @@ class InMemoryLocationRepository:
         # (they are independent instances even in production, sharing only a
         # connection pool), so there is no username to resolve here.
         return [DeviceSubscriptionHistoryOut(**h, changed_by_username=None) for h in entries]
+
+    async def generate_secret_code(self, device_id: str, *, code: str | None = None) -> str:
+        import secrets
+
+        if code is not None and self._secret_codes.get(code, device_id) != device_id:
+            raise SecretCodeTaken(code)
+        code = code or secrets.token_urlsafe(12)
+        # Remove any existing code for this device
+        self._secret_codes = {k: v for k, v in self._secret_codes.items() if v != device_id}
+        self._secret_codes[code] = device_id
+        row = self._device_subscriptions.setdefault(device_id, {})
+        row["secret_code"] = code
+        return code
+
+    async def device_id_by_secret_code(self, secret_code: str) -> str | None:
+        return self._secret_codes.get(secret_code)
 
 
 class PostgresLocationRepository:
@@ -626,7 +661,7 @@ class PostgresLocationRepository:
     async def device_details(self, device_id: str) -> DeviceDetails:
         async with self._pool.acquire() as conn:
             sub_row = await conn.fetchrow(
-                "SELECT subscription_end_date, installed_at, sim_expiry_date, name "
+                "SELECT subscription_end_date, installed_at, sim_expiry_date, name, secret_code "
                 "FROM device_subscriptions WHERE device_id = $1",
                 device_id,
             )
@@ -634,13 +669,14 @@ class PostgresLocationRepository:
                 "SELECT marker_code FROM device_markers WHERE device_id = $1", device_id
             )
         if sub_row is None:
-            return DeviceDetails(None, None, None, None, icon or DEFAULT_VEHICLE_ICON)
+            return DeviceDetails(None, None, None, None, icon or DEFAULT_VEHICLE_ICON, None)
         return DeviceDetails(
             subscription_end_date=sub_row["subscription_end_date"],
             installed_at=sub_row["installed_at"],
             sim_expiry_date=sub_row["sim_expiry_date"],
             name=sub_row["name"],
             icon=icon or DEFAULT_VEHICLE_ICON,
+            secret_code=sub_row["secret_code"],
         )
 
     async def set_device_profile(
@@ -770,3 +806,32 @@ class PostgresLocationRepository:
                 device_id,
             )
         return [DeviceSubscriptionHistoryOut(**dict(row)) for row in rows]
+
+    async def generate_secret_code(self, device_id: str, *, code: str | None = None) -> str:
+        import secrets
+
+        import asyncpg
+
+        code = code or secrets.token_urlsafe(12)
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO device_subscriptions (device_id, secret_code)
+                    VALUES ($1, $2)
+                    ON CONFLICT (device_id) DO UPDATE SET secret_code = EXCLUDED.secret_code, updated_at = now()
+                    """,
+                    device_id,
+                    code,
+                )
+        except asyncpg.UniqueViolationError:
+            raise SecretCodeTaken(code) from None
+        return code
+
+    async def device_id_by_secret_code(self, secret_code: str) -> str | None:
+        async with self._pool.acquire() as conn:
+            device_id = await conn.fetchval(
+                "SELECT device_id FROM device_subscriptions WHERE secret_code = $1",
+                secret_code,
+            )
+        return device_id

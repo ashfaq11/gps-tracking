@@ -4,9 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..config import ApiConfig
 from ..deps import current_user, get_config, get_repository, get_users, require_admin
-from ..repository import DeviceDetails, LocationRepository
+from ..repository import DeviceDetails, LocationRepository, SecretCodeTaken
 from ..schemas import (
     DeviceClaimRequest,
+    DeviceLocationBySecretCode,
     DeviceOut,
     DeviceProfileOut,
     DeviceProfileUpdate,
@@ -14,6 +15,8 @@ from ..schemas import (
     DeviceSubscriptionOut,
     DeviceSubscriptionUpdate,
     LocationOut,
+    SecretCodeOut,
+    SecretCodeUpdate,
     SubscriptionStatus,
 )
 from ..users_repository import AuthenticatedUser, UserRepository
@@ -37,6 +40,7 @@ def _subscription_out(device_id: str, details: DeviceDetails) -> DeviceSubscript
         subscription_status=_status(details.subscription_end_date),
         installed_at=details.installed_at,
         sim_expiry_date=details.sim_expiry_date,
+        secret_code=details.secret_code,
     )
 
 
@@ -435,3 +439,86 @@ async def subscription_history(
     device, it simply has no history yet.
     """
     return await repo.device_subscription_history(device_id)
+
+
+# --- secret code for anonymous access ---
+
+
+@router.post(
+    "/{device_id}/secret-code",
+    response_model=SecretCodeOut,
+    dependencies=[Depends(require_admin)],
+    summary="Generate or set a secret code for anonymous live location access",
+    status_code=status.HTTP_201_CREATED,
+    responses={409: {"description": "That code is already in use by another device."}},
+)
+async def generate_secret_code(
+    device_id: str,
+    payload: SecretCodeUpdate = SecretCodeUpdate(),
+    repo: LocationRepository = Depends(get_repository),
+) -> SecretCodeOut:
+    """
+    Set a unique secret code that allows anyone to view the current location
+    of this device without logging in. Share this code (or a link built from
+    it) with dispatchers, customers, or anyone who needs live tracking
+    access. Subsequent calls replace the previous code, immediately revoking
+    it.
+
+    Send `{"secret_code": "..."}` to choose a specific, human-memorable code
+    (e.g. one printed on a physical sign); omit it to auto-generate a random
+    one instead.
+    """
+    try:
+        secret_code = await repo.generate_secret_code(device_id, code=payload.secret_code)
+    except SecretCodeTaken:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Secret code {payload.secret_code!r} is already in use",
+        ) from None
+    return SecretCodeOut(device_id=device_id, secret_code=secret_code)
+
+
+@router.get(
+    "/public/location/{secret_code}",
+    response_model=DeviceLocationBySecretCode,
+    summary="Get live location via secret code (no login required)",
+    responses={
+        404: {"description": "Invalid or unknown secret code."}
+    },
+)
+async def get_location_by_secret_code(
+    secret_code: str,
+    repo: LocationRepository = Depends(get_repository),
+) -> DeviceLocationBySecretCode:
+    """
+    Get the current live location of a vehicle using only a secret code.
+    No authentication required. Share the code URL with anyone who needs
+    to track the vehicle. Regenerate the code to revoke access.
+    """
+    device_id = await repo.device_id_by_secret_code(secret_code)
+    if device_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invalid secret code",
+        )
+
+    location = await repo.latest_for_device(device_id)
+    if location is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No location data available for this device",
+        )
+
+    details = await repo.device_details(device_id)
+    return DeviceLocationBySecretCode(
+        device_id=device_id,
+        name=details.name,
+        icon=details.icon,
+        latitude=location.latitude,
+        longitude=location.longitude,
+        speed_kmh=location.speed_kmh,
+        course_deg=location.course_deg,
+        gps_fixed=location.gps_fixed,
+        satellites=location.satellites,
+        received_at=location.received_at,
+    )

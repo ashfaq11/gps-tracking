@@ -178,6 +178,10 @@ ALTER TABLE device_subscriptions ALTER COLUMN subscription_end_date DROP NOT NUL
 ALTER TABLE device_subscriptions ADD COLUMN IF NOT EXISTS installed_at TIMESTAMPTZ;
 ALTER TABLE device_subscriptions ADD COLUMN IF NOT EXISTS sim_expiry_date TIMESTAMPTZ;
 ALTER TABLE device_subscriptions ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE device_subscriptions ADD COLUMN IF NOT EXISTS secret_code TEXT UNIQUE;
+
+CREATE INDEX IF NOT EXISTS device_subscriptions_secret_code_idx
+    ON device_subscriptions (secret_code) WHERE secret_code IS NOT NULL;
 
 
 -- ---------------------------------------------------------------------------
