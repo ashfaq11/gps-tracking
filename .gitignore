@@ -7,6 +7,7 @@ venv/
 .ruff_cache/
 openapi.json
 .DS_Store
+logs/
 .claude/
 
 # Ad-hoc table exports (e.g. DBeaver's users_202609120435.sql). They hold real
