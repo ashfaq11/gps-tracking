@@ -14,6 +14,11 @@ import logging
 from fastapi import FastAPI, HTTPException, status
 
 from .config import ApiConfig
+from .geofences_repository import (
+    GeofenceRepository,
+    InMemoryGeofenceRepository,
+    PostgresGeofenceRepository,
+)
 from .live import ConnectionManager
 from .repository import (
     InMemoryLocationRepository,
@@ -31,14 +36,19 @@ log = logging.getLogger(__name__)
 
 async def _build(config: ApiConfig):
     """
-    Returns (repository, users, pool). The pool is None for the memory
+    Returns (repository, users, geofences, pool). The pool is None for the memory
     backend, and both repositories share it: pool sizing is tuned for one
     pool per instance, so a second would double a serverless deployment's
     connection count against the database's limit.
     """
     if config.backend == "memory":
         log.warning("API running with the in-memory backend; data is not persisted")
-        return InMemoryLocationRepository(), InMemoryUserRepository(), None
+        return (
+            InMemoryLocationRepository(),
+            InMemoryUserRepository(),
+            InMemoryGeofenceRepository(),
+            None,
+        )
 
     import asyncpg
 
@@ -54,7 +64,12 @@ async def _build(config: ApiConfig):
         config.pg_pool_max,
         config.pg_statement_cache_size,
     )
-    return PostgresLocationRepository(pool), PostgresUserRepository(pool), pool
+    return (
+        PostgresLocationRepository(pool),
+        PostgresUserRepository(pool),
+        PostgresGeofenceRepository(pool),
+        pool,
+    )
 
 
 async def ensure_repository(app: FastAPI) -> LocationRepository:
@@ -73,7 +88,7 @@ async def ensure_repository(app: FastAPI) -> LocationRepository:
         if repo is not None:
             return repo
         try:
-            repo, users, pool = await _build(app.state.config)
+            repo, users, geofences, pool = await _build(app.state.config)
         except Exception:
             log.exception("Could not reach storage")
             raise HTTPException(
@@ -82,6 +97,7 @@ async def ensure_repository(app: FastAPI) -> LocationRepository:
             ) from None
         app.state.repository = repo
         app.state.users = users
+        app.state.geofences = geofences
         app.state.pool = pool
         await _bootstrap_admin(app.state.config, users)
         return repo
@@ -91,6 +107,12 @@ async def ensure_users(app: FastAPI) -> UserRepository:
     """The account store, built alongside the location repository."""
     await ensure_repository(app)
     return app.state.users
+
+
+async def ensure_geofences(app: FastAPI) -> GeofenceRepository:
+    """The geofence store, built alongside the location repository."""
+    await ensure_repository(app)
+    return app.state.geofences
 
 
 async def _bootstrap_admin(config: ApiConfig, users: UserRepository) -> None:
@@ -123,6 +145,7 @@ async def close_repository(app: FastAPI) -> None:
     pool = getattr(app.state, "pool", None)
     app.state.repository = None
     app.state.users = None
+    app.state.geofences = None
     app.state.pool = None
     if pool is not None:
         await pool.close()
@@ -131,6 +154,7 @@ async def close_repository(app: FastAPI) -> None:
 def init_state(app: FastAPI) -> None:
     app.state.repository = None
     app.state.users = None
+    app.state.geofences = None
     app.state.pool = None
     # Created here rather than in lifespan, which may never run.
     app.state.repository_lock = asyncio.Lock()

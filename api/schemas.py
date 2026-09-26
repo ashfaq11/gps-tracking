@@ -638,3 +638,107 @@ class DeviceLocationBySecretCode(BaseModel):
     gps_fixed: bool | None = None
     satellites: int | None = None
     received_at: datetime = Field(description="When the latest position was received.")
+
+
+# --- geofences ----------------------------------------------------------------
+
+GeofenceKind = Literal["polygon", "circle"]
+GeofenceEventKind = Literal["exit", "enter"]
+
+MAX_GEOFENCE_VERTICES = 200
+MIN_GEOFENCE_RADIUS_M = 20
+MAX_GEOFENCE_RADIUS_M = 200_000
+
+
+class GeoPoint(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+
+
+class GeofenceIn(BaseModel):
+    """
+    A geofence to create. `polygon` takes `vertices` (at least 3, in order;
+    the last joins back to the first), `circle` takes `center` and
+    `radius_m`. `device_ids` are the vehicles it watches -- each must be
+    one the caller can see.
+    """
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "name": "Depot",
+                    "kind": "circle",
+                    "center": {"lat": 16.3067, "lng": 80.4365},
+                    "radius_m": 500,
+                    "device_ids": ["868120303372222"],
+                    "alert_on_exit": True,
+                    "alert_on_enter": False,
+                }
+            ]
+        }
+    }
+
+    name: str = Field(min_length=1, max_length=80)
+    kind: GeofenceKind
+    vertices: list[GeoPoint] | None = Field(default=None, max_length=MAX_GEOFENCE_VERTICES)
+    center: GeoPoint | None = None
+    radius_m: float | None = Field(
+        default=None, ge=MIN_GEOFENCE_RADIUS_M, le=MAX_GEOFENCE_RADIUS_M
+    )
+    device_ids: list[str] = Field(default_factory=list, max_length=500)
+    alert_on_exit: bool = True
+    alert_on_enter: bool = False
+
+
+class GeofenceUpdate(BaseModel):
+    """
+    Change a geofence. Only the fields sent are changed. Sending any shape
+    field (`kind`, `vertices`, `center`, `radius_m`) replaces the shape as a
+    whole and forgets every vehicle's inside/outside state, so the next
+    position after a redraw starts afresh rather than reporting a crossing
+    of a line that was never there.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    kind: GeofenceKind | None = None
+    vertices: list[GeoPoint] | None = Field(default=None, max_length=MAX_GEOFENCE_VERTICES)
+    center: GeoPoint | None = None
+    radius_m: float | None = Field(
+        default=None, ge=MIN_GEOFENCE_RADIUS_M, le=MAX_GEOFENCE_RADIUS_M
+    )
+    device_ids: list[str] | None = Field(default=None, max_length=500)
+    alert_on_exit: bool | None = None
+    alert_on_enter: bool | None = None
+
+
+class GeofenceOut(BaseModel):
+    id: int
+    name: str
+    kind: GeofenceKind
+    vertices: list[GeoPoint] | None = None
+    center: GeoPoint | None = None
+    radius_m: float | None = None
+    device_ids: list[str]
+    alert_on_exit: bool
+    alert_on_enter: bool
+    owner_id: int
+    owner_username: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class GeofenceEventOut(BaseModel):
+    """One crossing of a geofence's edge -- a row of the geofence report."""
+
+    id: int
+    geofence_id: int
+    geofence_name: str
+    device_id: str
+    kind: GeofenceEventKind
+    latitude: float
+    longitude: float
+    occurred_at: datetime = Field(description="When the vehicle crossed.")
+    alerted: bool = Field(
+        description="Whether the geofence's settings made this crossing send an alert."
+    )

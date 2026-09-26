@@ -338,6 +338,52 @@ class TestDeviceSubscriptions(ApiTestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    async def _dispatcher_token(self, devices: list[str]) -> str:
+        await self.client.post(
+            f"{BASE}/users",
+            json={
+                "username": "dispatcher",
+                "password": "dispatch123",
+                "role": "user",
+                "devices": devices,
+            },
+            headers=self.auth(),
+        )
+        return (
+            await self.client.post(
+                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+            )
+        ).json()["token"]
+
+    async def test_an_owner_can_read_their_devices_subscription_without_the_secret_code(self):
+        await self.ingest()
+        await self.client.post(
+            f"{BASE}/devices/{FIX['device_id']}/secret-code", headers=self.auth()
+        )
+        token = await self._dispatcher_token([FIX["device_id"]])
+
+        response = await self.client.get(
+            f"{BASE}/devices/{FIX['device_id']}/subscription", headers=self.auth(token)
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["subscription_status"], "active")
+        self.assertIsNone(response.json()["secret_code"])
+
+    async def test_a_user_cannot_read_an_unassigned_devices_subscription(self):
+        await self.ingest()
+        token = await self._dispatcher_token([])
+        response = await self.client.get(
+            f"{BASE}/devices/{FIX['device_id']}/subscription", headers=self.auth(token)
+        )
+        self.assertEqual(response.status_code, 404)
+
+    async def test_an_owner_still_cannot_read_the_renewal_history(self):
+        token = await self._dispatcher_token([FIX["device_id"]])
+        response = await self.client.get(
+            f"{BASE}/devices/{FIX['device_id']}/subscription-history", headers=self.auth(token)
+        )
+        self.assertEqual(response.status_code, 403)
+
     async def test_an_expired_device_disappears_from_latest_and_history_but_not_the_list(self):
         await self.ingest()
         past = _iso(datetime.now(timezone.utc) - timedelta(days=1))

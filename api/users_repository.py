@@ -114,7 +114,13 @@ class UserRepository(Protocol):
 
     async def remove_subscription(self, endpoint: str) -> None: ...
 
-    async def subscriptions_for_device(self, device_id: str) -> list[PushSubscription]: ...
+    async def subscriptions_for_device(
+        self, device_id: str, user_id: int | None = None
+    ) -> list[PushSubscription]:
+        """Every subscription whose account can see the device -- or, with
+        `user_id`, only that account's (a geofence alert goes to whoever
+        drew the geofence, not the whole fleet), still only if they can."""
+        ...
 
 
 class InMemoryUserRepository:
@@ -333,9 +339,13 @@ class InMemoryUserRepository:
     async def remove_subscription(self, endpoint: str) -> None:
         self._subscriptions.pop(endpoint, None)
 
-    async def subscriptions_for_device(self, device_id: str) -> list[PushSubscription]:
+    async def subscriptions_for_device(
+        self, device_id: str, user_id: int | None = None
+    ) -> list[PushSubscription]:
         out = []
         for endpoint, sub in self._subscriptions.items():
+            if user_id is not None and sub["user_id"] != user_id:
+                continue
             row = self._rows.get(sub["user_id"])
             if row is None or not row["is_active"]:
                 continue
@@ -658,14 +668,16 @@ class PostgresUserRepository:
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM push_subscriptions WHERE endpoint = $1", endpoint)
 
-    async def subscriptions_for_device(self, device_id: str) -> list[PushSubscription]:
+    async def subscriptions_for_device(
+        self, device_id: str, user_id: int | None = None
+    ) -> list[PushSubscription]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT ps.endpoint, ps.p256dh, ps.auth
                 FROM push_subscriptions ps
                 JOIN users u ON u.id = ps.user_id
-                WHERE u.is_active AND (
+                WHERE u.is_active AND ($2::bigint IS NULL OR u.id = $2) AND (
                     u.role = 'admin'
                     OR EXISTS (
                         SELECT 1 FROM user_devices ud
@@ -674,5 +686,6 @@ class PostgresUserRepository:
                 )
                 """,
                 device_id,
+                user_id,
             )
         return [PushSubscription(**dict(row)) for row in rows]

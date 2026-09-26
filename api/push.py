@@ -132,6 +132,60 @@ async def _dispatch(event: dict, users: UserRepository, config: ApiConfig) -> No
             log.exception("Unexpected error sending push to a subscription")
 
 
+_GEOFENCE_CHANNEL = "geofence_event"
+
+
+async def run_geofence_listener(config: ApiConfig, users: UserRepository) -> None:
+    """
+    Forward `geofence_event` notifications (the `check_geofences` trigger in
+    sql/schema.sql) as a push to the account that drew the geofence -- only
+    that account, and only while it can still see the vehicle. The trigger
+    only sends one when the geofence asks to be alerted for that direction;
+    every crossing is in the report regardless.
+    """
+    await listen_forever(
+        config, _GEOFENCE_CHANNEL, lambda event: _dispatch_geofence(event, users, config)
+    )
+
+
+def geofence_message(event: dict) -> dict:
+    """The push payload for one crossing: "SP left Depot"."""
+    vehicle = event.get("device_name") or event.get("device_id") or "A vehicle"
+    fence = event.get("geofence_name") or "a geofence"
+    left = event.get("kind") == "exit"
+    return {
+        "title": f"{vehicle} left {fence}" if left else f"{vehicle} entered {fence}",
+        "body": "Outside the geofence" if left else "Inside the geofence",
+        "device_id": event.get("device_id"),
+        "geofence_id": event.get("geofence_id"),
+        "tag": f"geofence-{event.get('id')}",
+    }
+
+
+async def _dispatch_geofence(event: dict, users: UserRepository, config: ApiConfig) -> None:
+    device_id = event.get("device_id")
+    owner_id = event.get("owner_id")
+    if not device_id or owner_id is None:
+        log.warning("%s event missing device_id/owner_id: %r", _GEOFENCE_CHANNEL, event)
+        return
+    log.info(
+        "%s: device=%s %s geofence=%s",
+        _GEOFENCE_CHANNEL,
+        device_id,
+        event.get("kind"),
+        event.get("geofence_id"),
+    )
+    subscriptions = await users.subscriptions_for_device(device_id, user_id=int(owner_id))
+    payload = geofence_message(event)
+    for sub in subscriptions:
+        try:
+            await asyncio.to_thread(send_push, sub.endpoint, sub.p256dh, sub.auth, payload, config)
+        except SubscriptionGone:
+            await users.remove_subscription(sub.endpoint)
+        except Exception:
+            log.exception("Unexpected error sending a geofence push")
+
+
 def _main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] != "genkey":
         print("usage: python -m api.push genkey", file=sys.stderr)

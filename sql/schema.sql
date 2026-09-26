@@ -394,3 +394,229 @@ DROP TRIGGER IF EXISTS device_locations_notify_fix ON device_locations;
 CREATE TRIGGER device_locations_notify_fix
     AFTER INSERT ON device_locations
     FOR EACH ROW EXECUTE FUNCTION notify_new_fix();
+
+
+-- ---------------------------------------------------------------------------
+-- Geofences.
+--
+-- An area drawn on the map -- a polygon, or a circle around a point -- and
+-- the vehicles it watches. When one of those vehicles crosses its edge, the
+-- crossing is recorded in geofence_events (the report) and announced with a
+-- NOTIFY that api/push.py turns into a push to the geofence's owner.
+--
+-- Detection is a trigger for the same reason notify_vehicle_motion is: both
+-- writers (the ingest endpoint and the gateway's COPY) store positions, and
+-- only the database sees every one of them.
+--
+-- No PostGIS: the geometry is small enough to do by hand -- ray casting
+-- for a polygon, haversine for a circle -- and needing an extension would
+-- tie the schema to hosts that offer it. The bounding box columns let the
+-- trigger skip the polygon walk for a point nowhere near it.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS geofences (
+    id             BIGSERIAL        PRIMARY KEY,
+    -- Whoever drew it. Their push subscriptions get its alerts; deleting the
+    -- account removes their geofences with it.
+    owner_id       BIGINT           NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    name           TEXT             NOT NULL,
+    kind           TEXT             NOT NULL CHECK (kind IN ('polygon', 'circle')),
+    -- Polygon: vertices in order, the last joined back to the first.
+    vertex_lats    DOUBLE PRECISION[],
+    vertex_lngs    DOUBLE PRECISION[],
+    -- Circle.
+    center_lat     DOUBLE PRECISION,
+    center_lng     DOUBLE PRECISION,
+    radius_m       DOUBLE PRECISION,
+    min_lat        DOUBLE PRECISION NOT NULL,
+    max_lat        DOUBLE PRECISION NOT NULL,
+    min_lng        DOUBLE PRECISION NOT NULL,
+    max_lng        DOUBLE PRECISION NOT NULL,
+    alert_on_exit  BOOLEAN          NOT NULL DEFAULT TRUE,
+    alert_on_enter BOOLEAN          NOT NULL DEFAULT FALSE,
+    created_at     TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    CHECK (
+        (kind = 'polygon' AND cardinality(vertex_lats) >= 3
+            AND cardinality(vertex_lats) = cardinality(vertex_lngs))
+        OR (kind = 'circle' AND center_lat IS NOT NULL AND center_lng IS NOT NULL
+            AND radius_m > 0)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS geofences_owner_idx ON geofences (owner_id);
+
+-- Which vehicles a geofence watches.
+CREATE TABLE IF NOT EXISTS geofence_devices (
+    geofence_id BIGINT NOT NULL REFERENCES geofences (id) ON DELETE CASCADE,
+    device_id   TEXT   NOT NULL,
+    PRIMARY KEY (geofence_id, device_id)
+);
+
+CREATE INDEX IF NOT EXISTS geofence_devices_device_idx ON geofence_devices (device_id);
+
+-- Last known inside/outside per geofence and vehicle -- what a new position
+-- is compared against. No row yet means "not known": the first position
+-- after a geofence is drawn (or redrawn, or a vehicle added to it) only sets
+-- this, it never alerts, so drawing a fence round a vehicle that is already
+-- outside it does not immediately report an "exit" that never happened.
+CREATE TABLE IF NOT EXISTS geofence_device_state (
+    geofence_id BIGINT      NOT NULL REFERENCES geofences (id) ON DELETE CASCADE,
+    device_id   TEXT        NOT NULL,
+    inside      BOOLEAN     NOT NULL,
+    -- The position this was decided from, so a late-arriving older one
+    -- (a tracker uploading its backlog) cannot overwrite a newer answer.
+    as_of       TIMESTAMPTZ NOT NULL,
+    fix_id      BIGINT      NOT NULL,
+    PRIMARY KEY (geofence_id, device_id)
+);
+
+-- The report: every crossing, both ways, whether or not it alerted.
+CREATE TABLE IF NOT EXISTS geofence_events (
+    id          BIGSERIAL        PRIMARY KEY,
+    geofence_id BIGINT           NOT NULL REFERENCES geofences (id) ON DELETE CASCADE,
+    device_id   TEXT             NOT NULL,
+    kind        TEXT             NOT NULL CHECK (kind IN ('exit', 'enter')),
+    latitude    DOUBLE PRECISION NOT NULL,
+    longitude   DOUBLE PRECISION NOT NULL,
+    -- When the vehicle crossed (the device's own clock when it has one),
+    -- not when the row was written.
+    occurred_at TIMESTAMPTZ      NOT NULL,
+    recorded_at TIMESTAMPTZ      NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS geofence_events_fence_idx ON geofence_events (geofence_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS geofence_events_device_idx ON geofence_events (device_id, occurred_at DESC);
+
+-- Great-circle distance in metres.
+CREATE OR REPLACE FUNCTION geo_distance_m(
+    lat1 DOUBLE PRECISION, lng1 DOUBLE PRECISION,
+    lat2 DOUBLE PRECISION, lng2 DOUBLE PRECISION
+) RETURNS DOUBLE PRECISION AS $$
+    SELECT 2 * 6371000 * asin(sqrt(
+        power(sin(radians(lat2 - lat1) / 2), 2)
+        + cos(radians(lat1)) * cos(radians(lat2)) * power(sin(radians(lng2 - lng1) / 2), 2)
+    ));
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+-- Whether a point is inside a geofence. Ray casting for a polygon: count
+-- how many edges a ray heading east from the point crosses; odd is inside.
+-- Plain lat/lng as a flat plane is fine at geofence scale (a few km) and
+-- away from the antimeridian, which no fence in India goes near.
+CREATE OR REPLACE FUNCTION geofence_contains(
+    g geofences, lat DOUBLE PRECISION, lng DOUBLE PRECISION
+) RETURNS BOOLEAN AS $$
+DECLARE
+    n      INT;
+    i      INT;
+    j      INT;
+    inside BOOLEAN := FALSE;
+BEGIN
+    IF g.kind = 'circle' THEN
+        RETURN geo_distance_m(g.center_lat, g.center_lng, lat, lng) <= g.radius_m;
+    END IF;
+
+    IF lat < g.min_lat OR lat > g.max_lat OR lng < g.min_lng OR lng > g.max_lng THEN
+        RETURN FALSE;
+    END IF;
+
+    n := cardinality(g.vertex_lats);
+    j := n;
+    FOR i IN 1..n LOOP
+        IF (g.vertex_lats[i] > lat) <> (g.vertex_lats[j] > lat)
+           AND lng < (g.vertex_lngs[j] - g.vertex_lngs[i]) * (lat - g.vertex_lats[i])
+                     / (g.vertex_lats[j] - g.vertex_lats[i]) + g.vertex_lngs[i] THEN
+            inside := NOT inside;
+        END IF;
+        j := i;
+    END LOOP;
+    RETURN inside;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION check_geofences() RETURNS trigger AS $$
+DECLARE
+    g           geofences%ROWTYPE;
+    now_inside  BOOLEAN;
+    prev        geofence_device_state%ROWTYPE;
+    crossing    TEXT;
+    event_id    BIGINT;
+    crossed_at  TIMESTAMPTZ;
+    device_name TEXT;
+BEGIN
+    -- A fix without a GPS lock repeats the last known coordinates at best;
+    -- judging a boundary on it would invent crossings.
+    IF NEW.gps_fixed IS FALSE THEN
+        RETURN NEW;
+    END IF;
+
+    -- Same rule the app uses for "when was this": the device's own clock,
+    -- unless it is plainly wrong (ahead of arrival, or a month behind).
+    crossed_at := CASE
+        WHEN NEW.fixed_at IS NULL
+          OR NEW.fixed_at > NEW.received_at + INTERVAL '10 minutes'
+          OR NEW.fixed_at < NEW.received_at - INTERVAL '30 days'
+        THEN NEW.received_at
+        ELSE NEW.fixed_at
+    END;
+
+    FOR g IN
+        SELECT f.* FROM geofences f
+        JOIN geofence_devices d ON d.geofence_id = f.id
+        WHERE d.device_id = NEW.device_id
+    LOOP
+        now_inside := geofence_contains(g, NEW.latitude, NEW.longitude);
+
+        SELECT * INTO prev FROM geofence_device_state
+        WHERE geofence_id = g.id AND device_id = NEW.device_id
+        FOR UPDATE;
+
+        IF NOT FOUND THEN
+            INSERT INTO geofence_device_state (geofence_id, device_id, inside, as_of, fix_id)
+            VALUES (g.id, NEW.device_id, now_inside, NEW.received_at, NEW.id)
+            ON CONFLICT (geofence_id, device_id) DO NOTHING;
+            CONTINUE;
+        END IF;
+
+        -- Older than what the state was already decided from -- see the
+        -- strictly-earlier note on notify_vehicle_motion.
+        IF (NEW.received_at, NEW.id) < (prev.as_of, prev.fix_id) THEN
+            CONTINUE;
+        END IF;
+
+        UPDATE geofence_device_state
+        SET inside = now_inside, as_of = NEW.received_at, fix_id = NEW.id
+        WHERE geofence_id = g.id AND device_id = NEW.device_id;
+
+        IF prev.inside = now_inside THEN
+            CONTINUE;
+        END IF;
+
+        crossing := CASE WHEN now_inside THEN 'enter' ELSE 'exit' END;
+        INSERT INTO geofence_events (geofence_id, device_id, kind, latitude, longitude, occurred_at)
+        VALUES (g.id, NEW.device_id, crossing, NEW.latitude, NEW.longitude, crossed_at)
+        RETURNING id INTO event_id;
+
+        IF (crossing = 'exit' AND g.alert_on_exit) OR (crossing = 'enter' AND g.alert_on_enter) THEN
+            SELECT name INTO device_name FROM device_subscriptions WHERE device_id = NEW.device_id;
+            PERFORM pg_notify('geofence_event', json_build_object(
+                'id', event_id,
+                'geofence_id', g.id,
+                'geofence_name', g.name,
+                'owner_id', g.owner_id,
+                'device_id', NEW.device_id,
+                'device_name', device_name,
+                'kind', crossing,
+                'occurred_at', crossed_at
+            )::text);
+        END IF;
+    END LOOP;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS device_locations_check_geofences ON device_locations;
+CREATE TRIGGER device_locations_check_geofences
+    AFTER INSERT ON device_locations
+    FOR EACH ROW EXECUTE FUNCTION check_geofences();

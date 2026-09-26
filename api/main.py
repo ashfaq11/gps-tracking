@@ -22,8 +22,8 @@ from .config import ApiConfig
 from .errors import register_error_handlers
 from .middleware import RequestLoggingMiddleware
 from .live import run_fix_listener
-from .push import run_motion_listener
-from .routers import devices, health, ingest, live, push, stats, users
+from .push import run_geofence_listener, run_motion_listener
+from .routers import devices, geofences, health, ingest, live, push, stats, users
 from .state import close_repository, ensure_repository, init_state
 
 log = logging.getLogger(__name__)
@@ -82,6 +82,11 @@ TAGS_METADATA = [
     {
         "name": "live",
         "description": "WebSocket: every new fix, pushed the instant it lands.",
+    },
+    {
+        "name": "geofences",
+        "description": "Areas drawn on the map, the vehicles they watch, and the report of "
+        "every time one crossed an edge.",
     },
 ]
 
@@ -153,6 +158,9 @@ async def lifespan(app: FastAPI):
         )
         if config.vapid_public_key and config.vapid_private_key:
             listener_tasks.append(asyncio.create_task(run_motion_listener(config, app.state.users)))
+            listener_tasks.append(
+                asyncio.create_task(run_geofence_listener(config, app.state.users))
+            )
 
     try:
         yield
@@ -191,7 +199,8 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
             allow_origins=config.cors_origins,
             # PATCH is needed by the account screens; without it the browser's
             # preflight fails and editing a user looks like a network error.
-            allow_methods=["GET", "POST", "PATCH"],
+            # DELETE for removing a geofence.
+            allow_methods=["GET", "POST", "PATCH", "DELETE"],
             allow_headers=["*"],
         )
 
@@ -202,6 +211,7 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     app.include_router(users.router, prefix=API_PREFIX)
     app.include_router(push.router, prefix=API_PREFIX)
     app.include_router(live.router, prefix=API_PREFIX)
+    app.include_router(geofences.router, prefix=API_PREFIX)
     return app
 
 

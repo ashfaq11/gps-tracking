@@ -329,7 +329,7 @@ async def release_device(
         )
 
 
-# --- subscription management (admin) ----------------------------------------
+# --- subscription management (admin; owners may read) ----------------------------------------
 #
 # Billing state on the device, independent of dashboard accounts and their
 # device scoping above. A lapsed device's location and history are hidden
@@ -341,15 +341,32 @@ async def release_device(
 @router.get(
     "/{device_id}/subscription",
     response_model=DeviceSubscriptionOut,
-    dependencies=[Depends(require_admin)],
     summary="A device's current subscription status",
+    responses={404: {"description": "Not a device assigned to this account."}},
 )
 async def get_subscription(
-    device_id: str, repo: LocationRepository = Depends(get_repository)
+    device_id: str,
+    user: AuthenticatedUser = Depends(current_user),
+    repo: LocationRepository = Depends(get_repository),
 ) -> DeviceSubscriptionOut:
-    """No row (the common case) means unmetered: this device never expires."""
-    details = await repo.device_details(device_id)
-    return _subscription_out(device_id, details)
+    """No row (the common case) means unmetered: this device never expires.
+
+    Readable by the device's own users as well as admins -- an owner should
+    know when their tracker or its SIM runs out -- but read-only, and without
+    `secret_code`: that is the key to the public live-location link, and
+    handing it out stays an admin decision. A device not assigned to the
+    caller answers 404, the same as `/latest`, so its existence is not
+    confirmed either.
+    """
+    scope = _scope(user)
+    if scope is not None and device_id not in scope:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No device {device_id}"
+        )
+    out = _subscription_out(device_id, await repo.device_details(device_id))
+    if not user.is_admin:
+        out.secret_code = None
+    return out
 
 
 @router.put(
