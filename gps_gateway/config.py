@@ -35,6 +35,10 @@ class Config:
     # their sockets until the writer catches up: a stalled database slows
     # devices down over TCP rather than growing memory without bound.
     queue_max: int = 10_000
+    # Log file directory; empty disables file logging (console only). Files
+    # rotate daily and are deleted once older than log_retention_days.
+    log_dir: str = "logs"
+    log_retention_days: int = 14
 
     @classmethod
     def from_env(cls, env=None) -> "Config":
@@ -54,4 +58,8 @@ class Config:
             batch_size=int(env.get("GATEWAY_BATCH_SIZE", cls.batch_size)),
             flush_interval_s=float(env.get("GATEWAY_FLUSH_INTERVAL", cls.flush_interval_s)),
             queue_max=int(env.get("GATEWAY_QUEUE_MAX", cls.queue_max)),
+            log_dir=env.get("GATEWAY_LOG_DIR", cls.log_dir),
+            log_retention_days=max(
+                1, int(env.get("GATEWAY_LOG_RETENTION_DAYS", cls.log_retention_days))
+            ),
         )
