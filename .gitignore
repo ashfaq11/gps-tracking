@@ -14,3 +14,6 @@ logs/
 # rows -- password hashes, emails, session hashes, location history -- and
 # must never be committed. The schema lives in sql/schema.sql only.
 sql/*_[0-9]*.sql
+
+# Local secrets (VAPID keys etc.) -- never commit
+.env.local
