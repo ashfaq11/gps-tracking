@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 
 from .config import Config
+from .logging_setup import configure_logging
 from .models import LocationEvent
 from .protocol import (
     PROTO_ALARM,
@@ -182,11 +183,9 @@ async def serve(config: Config | None = None, sink: Sink | None = None) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
+    config = Config.from_env()
+    configure_logging(config)
     try:
-        asyncio.run(serve())
+        asyncio.run(serve(config))
     except KeyboardInterrupt:
         log.info("Shutting down")
