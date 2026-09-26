@@ -294,6 +294,16 @@ error", "request_id": "..."}` — internal detail never reaches the response.
 including logs from application code, and disables uvicorn's own access log
 since `api.access` supersedes it.
 
+### Gateway log file
+
+The gateway also writes everything it logs to `logs/gateway.log` (relative to
+the working directory; override with `GATEWAY_LOG_DIR`). The file rolls over
+at local midnight to `gateway.log.YYYY-MM-DD`, and rotated files beyond
+`GATEWAY_LOG_RETENTION_DAYS` (default 14, i.e. two weeks) are deleted at each
+rollover, so no cron job or logrotate is needed. If the directory cannot be
+written, the gateway logs a warning and carries on with console output only.
+The API does not write a log file.
+
 ## Swagger / OpenAPI
 
 FastAPI serves the docs itself — no extra package, nothing to configure:
@@ -452,6 +462,8 @@ is the safe setting.
 | `GATEWAY_BATCH_SIZE` | `500` | gateway, max fixes per database write (one `COPY`); `1` turns batching off and ACKs only after each write |
 | `GATEWAY_FLUSH_INTERVAL` | `10` | gateway, seconds a partial batch waits before it is written — devices are ACKed on queueing, so this is also the live-map lag and what a crash can lose |
 | `GATEWAY_QUEUE_MAX` | `10000` | gateway, fixes waiting to be written before sessions stop reading their sockets |
+| `GATEWAY_LOG_DIR` | `logs` | gateway, directory for `gateway.log`; set empty to log to the console only |
+| `GATEWAY_LOG_RETENTION_DAYS` | `14` | gateway, days of rotated log files kept |
 | `PG_DSN` | `postgresql://user:pass@localhost:5432/gps` | both |
 | `API_HOST` / `API_PORT` | `127.0.0.1` / `55920` | api |
 | `API_BACKEND` | `postgres` | api (`postgres` or `memory`) |
