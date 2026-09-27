@@ -112,12 +112,15 @@ class GeofenceRepository(Protocol):
         device_id: str | None = None,
         after_id: int | None = None,
         limit: int = 100,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[GeofenceEventOut]:
         """
         Newest first. `owner_id` limits to that account's geofences and
         `device_scope` to those vehicles (None for either means no limit).
         `after_id` returns only rows newer than one already seen -- how the
-        app polls for new alerts.
+        app polls for new alerts. `since`/`until` bound occurred_at, both
+        inclusive -- the geofence report's window.
         """
         ...
 
@@ -248,6 +251,8 @@ class InMemoryGeofenceRepository:
         device_id: str | None = None,
         after_id: int | None = None,
         limit: int = 100,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[GeofenceEventOut]:
         out: list[GeofenceEventOut] = []
         for event in sorted(self._events, key=lambda e: (e["occurred_at"], e["id"]), reverse=True):
@@ -263,6 +268,10 @@ class InMemoryGeofenceRepository:
             if device_id is not None and event["device_id"] != device_id:
                 continue
             if after_id is not None and event["id"] <= after_id:
+                continue
+            if since is not None and event["occurred_at"] < since:
+                continue
+            if until is not None and event["occurred_at"] > until:
                 continue
             out.append(
                 GeofenceEventOut(
@@ -466,6 +475,8 @@ class PostgresGeofenceRepository:
         device_id: str | None = None,
         after_id: int | None = None,
         limit: int = 100,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[GeofenceEventOut]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -481,6 +492,8 @@ class PostgresGeofenceRepository:
                   AND ($3::bigint IS NULL OR e.geofence_id = $3)
                   AND ($4::text IS NULL OR e.device_id = $4)
                   AND ($5::bigint IS NULL OR e.id > $5)
+                  AND ($7::timestamptz IS NULL OR e.occurred_at >= $7)
+                  AND ($8::timestamptz IS NULL OR e.occurred_at <= $8)
                 ORDER BY e.occurred_at DESC, e.id DESC
                 LIMIT $6
                 """,
@@ -490,5 +503,7 @@ class PostgresGeofenceRepository:
                 device_id,
                 after_id,
                 limit,
+                since,
+                until,
             )
         return [GeofenceEventOut(**dict(r)) for r in rows]

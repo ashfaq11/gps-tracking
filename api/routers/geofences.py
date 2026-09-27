@@ -11,11 +11,24 @@ Detecting a crossing is not done here at all -- see the `check_geofences`
 trigger in sql/schema.sql and api/push.py for the alert.
 """
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..deps import current_user, get_geofences
+from ..geofence_report import summarize_geofences
 from ..geofences_repository import GeofenceFields, GeofenceRepository, GeofenceShape
-from ..schemas import GeofenceEventOut, GeofenceIn, GeofenceOut, GeofenceUpdate, GeoPoint
+from ..schemas import (
+    GeofenceEventOut,
+    GeofenceIn,
+    GeofenceOut,
+    GeofenceReport,
+    GeofenceReportRow,
+    GeofenceReportTotals,
+    GeofenceReportVehicle,
+    GeofenceUpdate,
+    GeoPoint,
+)
 from ..users_repository import AuthenticatedUser
 
 router = APIRouter(prefix="/geofences", tags=["geofences"])
@@ -89,6 +102,10 @@ async def list_events(
         "alerts without re-reading ones it has seen.",
     ),
     limit: int = Query(default=100, ge=1, le=500),
+    since: datetime | None = Query(
+        default=None, description="Only crossings at or after this time -- e.g. a day's start."
+    ),
+    until: datetime | None = Query(default=None, description="Only crossings at or before this time."),
     user: AuthenticatedUser = Depends(current_user),
     repo: GeofenceRepository = Depends(get_geofences),
 ) -> list[GeofenceEventOut]:
@@ -105,7 +122,97 @@ async def list_events(
         device_id=device_id,
         after_id=after_id,
         limit=limit,
+        since=_aware(since) if since else None,
+        until=_aware(until) if until else None,
     )
+
+
+# Same cap as the trip report; and a window's crossings are read in one go,
+# which a busy fleet over a month could make large -- past this many the
+# report says it is partial rather than reading without bound.
+MAX_REPORT_WINDOW = timedelta(days=31)
+MAX_REPORT_EVENTS = 50_000
+
+
+@router.get(
+    "/report",
+    response_model=GeofenceReport,
+    summary="Geofence report: entries, exits, vehicles and time inside, per geofence",
+)
+async def geofence_report(
+    since: datetime | None = Query(
+        default=None, description="Window start. Defaults to 24 hours before `until`."
+    ),
+    until: datetime | None = Query(default=None, description="Window end. Defaults to now."),
+    user: AuthenticatedUser = Depends(current_user),
+    repo: GeofenceRepository = Depends(get_geofences),
+) -> GeofenceReport:
+    """
+    Per geofence over the window: entries, exits, alerts sent, and each
+    vehicle's crossings and time spent inside (rules in
+    api/geofence_report.py). Scoped like `/events`: an admin sees every
+    geofence, anyone else only their own geofences and their own vehicles.
+    Quiet geofences are listed too, with zeros.
+    """
+    now = datetime.now(timezone.utc)
+    until = _aware(until) if until else now
+    since = _aware(since) if since else until - timedelta(hours=24)
+    if since >= until:
+        raise _invalid("`since` must be before `until`.")
+    if until - since > MAX_REPORT_WINDOW:
+        raise _invalid("A report covers at most 31 days.")
+
+    owner_id = _owner_filter(user)
+    fences = await repo.list_geofences(owner_id)
+    events = await repo.list_events(
+        owner_id=owner_id,
+        device_scope=_device_scope(user),
+        since=since,
+        until=until,
+        limit=MAX_REPORT_EVENTS,
+    )
+    stats = summarize_geofences(fences, events, since, until, now)
+    return GeofenceReport(
+        since=since,
+        until=until,
+        truncated=len(events) >= MAX_REPORT_EVENTS,
+        totals=GeofenceReportTotals(
+            geofences=sum(1 for f in stats if f.entries or f.exits),
+            entries=sum(f.entries for f in stats),
+            exits=sum(f.exits for f in stats),
+            alerts=sum(f.alerts for f in stats),
+            vehicles=len({v for f in stats for v in f.vehicles}),
+        ),
+        geofences=[
+            GeofenceReportRow(
+                geofence_id=f.geofence_id,
+                name=f.name,
+                entries=f.entries,
+                exits=f.exits,
+                alerts=f.alerts,
+                time_inside_minutes=f.seconds_inside / 60,
+                last_event_at=f.last_event_at,
+                vehicles=[
+                    GeofenceReportVehicle(
+                        device_id=v.device_id,
+                        entries=v.entries,
+                        exits=v.exits,
+                        time_inside_minutes=v.seconds_inside / 60,
+                        last_event_at=v.last_event_at,
+                    )
+                    for v in sorted(
+                        f.vehicles.values(), key=lambda v: (-(v.entries + v.exits), v.device_id)
+                    )
+                ],
+            )
+            for f in stats
+        ],
+    )
+
+
+def _aware(value: datetime) -> datetime:
+    """A timestamp without an offset is read as UTC, like the rest of the API."""
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 @router.get("", response_model=list[GeofenceOut], summary="List geofences")

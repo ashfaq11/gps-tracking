@@ -823,3 +823,49 @@ class GeofenceEventOut(BaseModel):
     alerted: bool = Field(
         description="Whether the geofence's settings made this crossing send an alert."
     )
+
+
+class GeofenceReportVehicle(BaseModel):
+    device_id: str
+    entries: int
+    exits: int
+    time_inside_minutes: float
+    last_event_at: datetime | None = None
+
+
+class GeofenceReportRow(BaseModel):
+    """One geofence over the report window -- see api/geofence_report.py."""
+
+    geofence_id: int
+    name: str
+    entries: int
+    exits: int
+    alerts: int = Field(description="Crossings this geofence's settings sent an alert for.")
+    time_inside_minutes: float = Field(
+        description="Summed across vehicles: from each enter to its exit, counting a vehicle "
+        "already inside at the window's start from then, and one still inside up to its end."
+    )
+    last_event_at: datetime | None = None
+    vehicles: list[GeofenceReportVehicle] = Field(description="Most crossings first.")
+
+
+class GeofenceReportTotals(BaseModel):
+    geofences: int = Field(description="Geofences with at least one crossing.")
+    entries: int
+    exits: int
+    alerts: int
+    vehicles: int = Field(description="Distinct vehicles that crossed any geofence.")
+
+
+class GeofenceReport(BaseModel):
+    since: datetime
+    until: datetime
+    totals: GeofenceReportTotals
+    geofences: list[GeofenceReportRow] = Field(
+        description="Every geofence this account can see, most crossings first."
+    )
+    truncated: bool = Field(
+        default=False,
+        description="True if the window held more crossings than one report reads; the "
+        "figures then cover only the newest of them.",
+    )
