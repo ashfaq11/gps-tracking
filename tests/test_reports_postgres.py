@@ -48,16 +48,22 @@ class TestTripReportParity(unittest.IsolatedAsyncioTestCase):
                 # Drives, stops of every length (some past 10 min), dropouts.
                 moving = rng.random() < 0.55
                 speed = rng.choice([None, 0]) if not moving else rng.randint(1, 90)
+                # The junk a real tracker sends: no GPS lock, one-byte
+                # garbage near 255, and isolated spikes.
+                gps_fixed = rng.choice([True, True, True, True, False, None])
+                if moving and rng.random() < 0.05:
+                    speed = rng.choice([rng.randint(150, 199), rng.randint(200, 255)])
                 at += timedelta(seconds=rng.choice([10, 30, 60, 60, 120, 900]))
                 if moving:
                     lat += rng.uniform(-0.002, 0.002)
                     lng += rng.uniform(-0.002, 0.002)
-                fixes.append(ReportFix(lat, lng, speed, at))
-                rows.append((device_id, lat, lng, speed, at))
+                fixes.append(ReportFix(lat, lng, speed, at, gps_fixed))
+                rows.append((device_id, lat, lng, speed, at, gps_fixed))
             expected[device_id] = summarize_device(fixes)
         await self.pool.executemany(
-            "INSERT INTO device_locations (device_id, latitude, longitude, speed_kmh, received_at) "
-            "VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO device_locations "
+            "(device_id, latitude, longitude, speed_kmh, received_at, gps_fixed) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
             rows,
         )
 

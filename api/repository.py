@@ -8,7 +8,14 @@ lets the API (and its tests) run with no database at all.
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, Protocol
 
-from .reports import HALT_THRESHOLD, MAX_RUNNING_GAP, ReportFix, summarize_device
+from .reports import (
+    HALT_THRESHOLD,
+    MAX_PLAUSIBLE_SPEED_KMH,
+    MAX_RUNNING_GAP,
+    SPIKE_KMH,
+    ReportFix,
+    summarize_device,
+)
 from .schemas import (
     DEFAULT_VEHICLE_ICON,
     DeviceOut,
@@ -360,7 +367,10 @@ class InMemoryLocationRepository:
         for device_id, rows in by_device.items():
             rows.sort(key=lambda r: (r.received_at, r.id))
             trips = summarize_device(
-                [ReportFix(r.latitude, r.longitude, r.speed_kmh, r.received_at) for r in rows]
+                [
+                    ReportFix(r.latitude, r.longitude, r.speed_kmh, r.received_at, r.gps_fixed)
+                    for r in rows
+                ]
             )
             reports.append(DeviceReport(device_id=device_id, **vars(trips)))
         return sorted(reports, key=lambda r: (-r.distance_km, r.device_id))
@@ -717,7 +727,9 @@ class PostgresLocationRepository:
                 """
                 WITH f AS (
                     SELECT device_id, id, latitude, longitude, speed_kmh, received_at,
+                           gps_fixed,
                            COALESCE(speed_kmh, 0)                     AS speed,
+                           LEAD(COALESCE(speed_kmh, 0)) OVER w        AS n_speed,
                            LAG(latitude) OVER w                       AS p_lat,
                            LAG(longitude) OVER w                      AS p_lon,
                            LAG(received_at) OVER w                    AS p_at,
@@ -761,7 +773,18 @@ class PostgresLocationRepository:
                 )
                 SELECT s.device_id,
                        sum(s.metres) / 1000                     AS distance_km,
-                       max(s.speed_kmh)                         AS max_speed_kmh,
+                       -- Plausible readings only: a GPS lock, under the
+                       -- ceiling, and not a spike above both neighbours
+                       -- (a missing neighbour does not count against it).
+                       max(s.speed_kmh) FILTER (
+                           WHERE s.gps_fixed IS DISTINCT FROM false
+                             AND s.speed_kmh <= $6
+                             AND NOT (
+                                 (s.p_speed IS NOT NULL OR s.n_speed IS NOT NULL)
+                                 AND (s.p_speed IS NULL OR s.speed_kmh > s.p_speed + $7)
+                                 AND (s.n_speed IS NULL OR s.speed_kmh > s.n_speed + $7)
+                             )
+                       )                                        AS max_speed_kmh,
                        sum(s.running_s) / 60                    AS running_minutes,
                        COALESCE(max(h.n), 0)                    AS halt_count,
                        COALESCE(max(h.secs), 0) / 60            AS halt_minutes,
@@ -779,6 +802,8 @@ class PostgresLocationRepository:
                 list(device_ids) if device_ids is not None else None,
                 HALT_THRESHOLD,
                 MAX_RUNNING_GAP,
+                MAX_PLAUSIBLE_SPEED_KMH,
+                SPIKE_KMH,
             )
         return [
             DeviceReport(
