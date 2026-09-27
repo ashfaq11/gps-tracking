@@ -2,11 +2,13 @@ import asyncio
 import unittest
 
 from gps_gateway.config import Config
-from gps_gateway.models import LocationEvent
+from gps_gateway.models import LocationEvent, StatusEvent
 from gps_gateway.protocol import (
     PROTO_ALARM,
     PROTO_HEARTBEAT,
+    PROTO_LBS,
     PROTO_LOCATION,
+    PROTO_LOCATION_ACC,
     PROTO_LOGIN,
     build_frame,
 )
@@ -15,7 +17,7 @@ from gps_gateway.server import DeviceSession
 from gps_gateway.sinks.base import Sink
 from gps_gateway.sinks.batching import BatchingSink
 
-from .test_codec import SAMPLE_LOCATION
+from .test_codec import SAMPLE_CELL, SAMPLE_LOCATION
 
 IMEI_BYTES = bytes.fromhex("0868120303372449")
 IMEI = "868120303372449"
@@ -24,12 +26,18 @@ IMEI = "868120303372449"
 class MemorySink(Sink):
     def __init__(self, fail=False):
         self.events: list[LocationEvent] = []
+        self.statuses: list[StatusEvent] = []
         self.fail = fail
 
     async def publish(self, event):
         if self.fail:
             raise RuntimeError("sink is down")
         self.events.append(event)
+
+    async def publish_status(self, status):
+        if self.fail:
+            raise RuntimeError("sink is down")
+        self.statuses.append(status)
 
 
 class CountingSink(MemorySink):
@@ -119,6 +127,68 @@ class TestDeviceSession(unittest.IsolatedAsyncioTestCase):
         await self.feed(build_frame(PROTO_ALARM, serial=2, content=SAMPLE_LOCATION))
         self.assertEqual(len(self.sink.events), 1)
         self.assertEqual(self.sink.events[0].event_type, "alarm")
+
+    async def test_cell_from_a_location_reaches_the_sink(self):
+        await self.feed(build_frame(PROTO_LOGIN, serial=1, content=IMEI_BYTES))
+        await self.feed(build_frame(PROTO_LOCATION, serial=2, content=SAMPLE_LOCATION + SAMPLE_CELL))
+        event = self.sink.events[0]
+        self.assertEqual((event.mcc, event.mnc, event.lac, event.cell_id), (460, 0, 10365, 8120))
+
+    async def test_acc_location_is_published_with_ignition_and_acked(self):
+        content = SAMPLE_LOCATION + SAMPLE_CELL + bytes.fromhex("01" "00" "00")
+        await self.feed(build_frame(PROTO_LOGIN, serial=1, content=IMEI_BYTES))
+        await self.feed(build_frame(PROTO_LOCATION_ACC, serial=2, content=content))
+        event = self.sink.events[0]
+        self.assertEqual((event.device_id, event.event_type, event.ignition), (IMEI, "location", True))
+        self.assertEqual(event.cell_id, 8120)
+        ack = acks_in(self.writer)[-1]
+        self.assertEqual((ack.protocol, ack.serial), (PROTO_LOCATION_ACC, 2))
+
+    async def test_acc_location_before_login_is_dropped_and_not_acked(self):
+        content = SAMPLE_LOCATION + SAMPLE_CELL + bytes.fromhex("01" "00" "00")
+        await self.feed(build_frame(PROTO_LOCATION_ACC, serial=1, content=content))
+        self.assertEqual((self.sink.events, self.writer.sent), ([], b""))
+
+    async def test_alarm_cell_is_read_past_its_length_byte(self):
+        content = SAMPLE_LOCATION + b"\x09" + SAMPLE_CELL + b"\x46\x06\x04\x00\x01"
+        await self.feed(build_frame(PROTO_LOGIN, serial=1, content=IMEI_BYTES))
+        await self.feed(build_frame(PROTO_ALARM, serial=2, content=content))
+        self.assertEqual(self.sink.events[0].cell_id, 8120)
+        self.assertTrue(self.sink.events[0].ignition)
+
+    async def test_heartbeat_ignition_is_recorded_as_status(self):
+        await self.feed(build_frame(PROTO_LOGIN, serial=1, content=IMEI_BYTES))
+        await self.feed(build_frame(PROTO_HEARTBEAT, serial=2, content=bytes.fromhex("4604040001")))
+        await self.feed(build_frame(PROTO_HEARTBEAT, serial=3, content=bytes.fromhex("4404040001")))
+        self.assertEqual([(s.device_id, s.ignition) for s in self.sink.statuses],
+                         [(IMEI, True), (IMEI, False)])
+        self.assertEqual(self.sink.events, [])
+
+    async def test_heartbeat_before_login_is_acked_but_not_recorded(self):
+        await self.feed(build_frame(PROTO_HEARTBEAT, serial=5, content=bytes.fromhex("4604040001")))
+        self.assertEqual(self.sink.statuses, [])
+        self.assertEqual(acks_in(self.writer)[-1].serial, 5)
+
+    async def test_a_failing_status_write_still_acks_the_heartbeat(self):
+        self.sink.fail = True
+        await self.feed(build_frame(PROTO_LOGIN, serial=1, content=IMEI_BYTES))
+        await self.feed(build_frame(PROTO_HEARTBEAT, serial=2, content=bytes.fromhex("4604040001")))
+        self.assertEqual(acks_in(self.writer)[-1].serial, 2)
+
+    async def test_lbs_packet_is_acked_without_publishing(self):
+        # No coordinates, so there is no row to write -- but an unACKed
+        # packet would be resent by the device forever.
+        content = bytes.fromhex("1A091B0A0F1E") + SAMPLE_CELL + b"\x3C"
+        await self.feed(build_frame(PROTO_LOGIN, serial=1, content=IMEI_BYTES))
+        await self.feed(build_frame(PROTO_LBS, serial=7, content=content))
+        self.assertEqual(self.sink.events, [])
+        ack = acks_in(self.writer)[-1]
+        self.assertEqual((ack.protocol, ack.serial), (PROTO_LBS, 7))
+
+    async def test_lbs_packet_before_login_is_dropped_and_not_acked(self):
+        content = bytes.fromhex("1A091B0A0F1E") + SAMPLE_CELL
+        await self.feed(build_frame(PROTO_LBS, serial=1, content=content))
+        self.assertEqual(self.writer.sent, b"")
 
     async def test_heartbeat_is_acked_without_publishing(self):
         await self.feed(build_frame(PROTO_LOGIN, serial=1, content=IMEI_BYTES))

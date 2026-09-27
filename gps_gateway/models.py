@@ -24,3 +24,43 @@ class LocationEvent:
     # When this gateway decoded the packet.
     received_at: datetime = field(default_factory=_utcnow)
     event_type: str = "location"
+    # Serving GSM/LTE cell the tracker was camped on, when the packet carries
+    # it. All four are None together if it did not (or reported all zeros).
+    mcc: int | None = None
+    mnc: int | None = None
+    lac: int | None = None
+    cell_id: int | None = None
+    # ACC line as reported by this very packet (alarms carry it); None when
+    # the packet has no status byte. Plain location packets never do -- the
+    # current state lives in device_status, fed mostly by heartbeats.
+    ignition: bool | None = None
+
+
+@dataclass
+class StatusEvent:
+    """
+    A heartbeat's terminal status. No position, so it never becomes a
+    device_locations row; it only moves the device's current ignition state.
+    """
+
+    device_id: str
+    ignition: bool
+    received_at: datetime = field(default_factory=_utcnow)
+
+
+@dataclass
+class CellReport:
+    """
+    An LBS-only packet (protocol 0x18): the serving cell with no GPS
+    position. Not a LocationEvent -- there are no coordinates to store until
+    the cell is resolved to one through a geolocation service.
+    """
+
+    device_id: str
+    mcc: int
+    mnc: int
+    lac: int
+    cell_id: int
+    # Raw signal strength byte, higher is stronger; None if not sent.
+    signal: int | None = None
+    reported_at: datetime | None = None

@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 
-from gps_gateway.models import LocationEvent
+from gps_gateway.models import LocationEvent, StatusEvent
 from gps_gateway.sinks.base import Sink
 from gps_gateway.sinks.batching import BatchingSink
 from gps_gateway.sinks.postgres import is_row_error
@@ -27,6 +27,7 @@ class RecordingSink(Sink):
         self.fail_batches = fail_batches
         self.gate: asyncio.Event | None = None
         self.stopped = False
+        self.statuses = []
 
     async def publish_many(self, events):
         if self.gate is not None:
@@ -38,6 +39,9 @@ class RecordingSink(Sink):
             RuntimeError("row rejected") if e.device_id in self.reject_devices else None
             for e in events
         ]
+
+    async def publish_status(self, status):
+        self.statuses.append(status)
 
     async def stop(self):
         self.stopped = True
@@ -69,6 +73,13 @@ class TestBatchingSink(unittest.IsolatedAsyncioTestCase):
         sink, inner = await self.running(flush_interval_s=30)
         await asyncio.wait_for(sink.publish(event(1)), timeout=0.5)
         self.assertEqual(inner.sizes, [])
+
+    async def test_status_goes_straight_through_without_waiting_for_a_flush(self):
+        sink, inner = await self.running(flush_interval_s=30)
+        await sink.publish(event(1))
+        await sink.publish_status(StatusEvent("dev1", ignition=True))
+        self.assertEqual([s.ignition for s in inner.statuses], [True])
+        self.assertEqual(inner.sizes, [])  # the fix is still queued
 
     async def test_the_interval_writes_a_partial_batch(self):
         sink, inner = await self.running()

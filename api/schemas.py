@@ -29,6 +29,11 @@ class LocationIn(BaseModel):
                     "gps_fixed": True,
                     "satellites": 9,
                     "fixed_at": "2026-09-06T03:28:59Z",
+                    "mcc": 404,
+                    "mnc": 45,
+                    "lac": 4101,
+                    "cell_id": 21635,
+                    "ignition": True,
                 }
             ]
         }
@@ -48,6 +53,21 @@ class LocationIn(BaseModel):
         description="When the device took the fix. Null if its clock was unset; "
         "fall back to received_at.",
     )
+    # Serving cell (LBS). Optional, and meaningful only as a set -- the same
+    # four fields the TCP gateway decodes from a GT06 packet.
+    mcc: int | None = Field(default=None, ge=0, le=999, description="Mobile country code.")
+    mnc: int | None = Field(default=None, ge=0, le=999, description="Mobile network code.")
+    lac: int | None = Field(
+        default=None, ge=0, le=0xFFFFFF, description="Location / tracking area code."
+    )
+    cell_id: int | None = Field(
+        default=None, ge=0, le=2**36 - 1, description="Cell id (GSM CI, LTE ECI or 5G NCI)."
+    )
+    ignition: bool | None = Field(
+        default=None,
+        description="Ignition (ACC) at the time of this fix. Omit if unknown -- null is "
+        "never read as off.",
+    )
 
 
 class LocationOut(BaseModel):
@@ -65,6 +85,11 @@ class LocationOut(BaseModel):
                     "satellites": 9,
                     "fixed_at": "2026-09-06T03:28:59Z",
                     "received_at": "2026-09-06T03:29:01.220Z",
+                    "mcc": 404,
+                    "mnc": 45,
+                    "lac": 4101,
+                    "cell_id": 21635,
+                    "ignition": True,
                 }
             ]
         }
@@ -80,6 +105,11 @@ class LocationOut(BaseModel):
     satellites: int | None = None
     fixed_at: datetime | None = None
     received_at: datetime
+    mcc: int | None = None
+    mnc: int | None = None
+    lac: int | None = None
+    cell_id: int | None = None
+    ignition: bool | None = None
 
 
 # Plain "active"/"expired" rather than a bare boolean -- the pairing every
@@ -109,6 +139,8 @@ class DeviceOut(BaseModel):
                     "name": "Delivery Van 3",
                     "icon": "van",
                     "owner_username": "priya",
+                    "ignition": True,
+                    "ignition_changed_at": "2026-09-06T03:10:44Z",
                 }
             ]
         }
@@ -161,6 +193,15 @@ class DeviceOut(BaseModel):
         default=None,
         description="Who has claimed this device (see device_claims). Null means unclaimed -- "
         "onboard it via PATCH/POST on this user, or POST /devices/claim.",
+    )
+    ignition: bool | None = Field(
+        default=None,
+        description="Current ignition (ACC) state -- from the tracker's latest heartbeat or "
+        "any fix that reported it, whichever is newer. Null if it has never reported one.",
+    )
+    ignition_changed_at: datetime | None = Field(
+        default=None,
+        description="When ignition last switched on or off, e.g. to show 'parked since'.",
     )
 
 

@@ -21,7 +21,7 @@ from .schemas import (
 
 _COLUMNS = (
     "id, device_id, latitude, longitude, speed_kmh, course_deg, "
-    "gps_fixed, satellites, fixed_at, received_at"
+    "gps_fixed, satellites, fixed_at, received_at, mcc, mnc, lac, cell_id, ignition"
 )
 
 
@@ -183,6 +183,9 @@ class InMemoryLocationRepository:
         self._device_markers: dict[str, VehicleIcon] = {}
         # secret_code -> device_id mapping
         self._secret_codes: dict[str, str] = {}
+        # device_id -> (ignition, ignition_changed_at), mirroring device_status.
+        # Only ingest feeds it here; heartbeats reach Postgres alone.
+        self._ignition: dict[str, tuple[bool, datetime]] = {}
 
     def _sub_end_date(self, device_id: str) -> datetime | None:
         return self._device_subscriptions.get(device_id, {}).get("subscription_end_date")
@@ -204,6 +207,11 @@ class InMemoryLocationRepository:
         )
         self._next_id += 1
         self._rows.append(row)
+        if row.ignition is not None:
+            # What sql/schema.sql's record_ignition() does for the same row.
+            current = self._ignition.get(row.device_id)
+            if current is None or current[0] != row.ignition:
+                self._ignition[row.device_id] = (row.ignition, row.received_at)
         return row
 
     async def latest_for_device(self, device_id: str) -> LocationOut | None:
@@ -260,6 +268,8 @@ class InMemoryLocationRepository:
                     name=self._device_subscriptions.get(device_id, {}).get("name"),
                     icon=self._device_markers.get(device_id, DEFAULT_VEHICLE_ICON),
                     halted_since=_halted_since(rows),
+                    ignition=self._ignition.get(device_id, (None, None))[0],
+                    ignition_changed_at=self._ignition.get(device_id, (None, None))[1],
                 )
                 for device_id, rows in by_device.items()
             ),
@@ -442,8 +452,9 @@ class PostgresLocationRepository:
                 f"""
                 INSERT INTO device_locations
                     (device_id, latitude, longitude, speed_kmh, course_deg,
-                     gps_fixed, satellites, fixed_at, received_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+                     gps_fixed, satellites, fixed_at, received_at,
+                     mcc, mnc, lac, cell_id, ignition)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, $10, $11, $12, $13)
                 RETURNING {_COLUMNS}
                 """,
                 location.device_id,
@@ -454,6 +465,11 @@ class PostgresLocationRepository:
                 location.gps_fixed,
                 location.satellites,
                 location.fixed_at,
+                location.mcc,
+                location.mnc,
+                location.lac,
+                location.cell_id,
+                location.ignition,
             )
         return LocationOut(**dict(row))
 
@@ -542,10 +558,15 @@ class PostgresLocationRepository:
                        COALESCE(
                            MAX(dl.received_at) FILTER (WHERE dl.speed_kmh > 0),
                            MIN(dl.received_at)
-                       )                                     AS halted_since
+                       )                                     AS halted_since,
+                       -- At most one device_status row per device, so these
+                       -- aggregates only unwrap it for the GROUP BY.
+                       bool_or(st.ignition)                 AS ignition,
+                       MAX(st.ignition_changed_at)          AS ignition_changed_at
                 FROM device_locations dl
                 LEFT JOIN device_subscriptions ds ON ds.device_id = dl.device_id
                 LEFT JOIN device_markers dm ON dm.device_id = dl.device_id
+                LEFT JOIN device_status st ON st.device_id = dl.device_id
                 WHERE ($1::text[] IS NULL OR dl.device_id = ANY($1::text[]))
                 GROUP BY dl.device_id
                 ORDER BY last_seen DESC
@@ -564,6 +585,8 @@ class PostgresLocationRepository:
                 name=r["name"],
                 icon=r["icon"],
                 halted_since=r["halted_since"],
+                ignition=r["ignition"],
+                ignition_changed_at=r["ignition_changed_at"],
             )
             for r in rows
         ]

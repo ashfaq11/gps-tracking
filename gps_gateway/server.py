@@ -6,13 +6,17 @@ from typing import Optional
 
 from .config import Config
 from .logging_setup import configure_logging
-from .models import LocationEvent
+from .models import LocationEvent, StatusEvent
 from .protocol import (
     PROTO_ALARM,
     PROTO_HEARTBEAT,
+    PROTO_LBS,
     PROTO_LOCATION,
+    PROTO_LOCATION_ACC,
     PROTO_LOGIN,
     build_ack,
+    decode_heartbeat,
+    decode_lbs,
     decode_location,
     decode_login,
 )
@@ -103,19 +107,41 @@ class DeviceSession:
                 log.info("Device logged in: %s", self.device_id)
                 acks.append(frame)
 
-            elif frame.protocol in (PROTO_LOCATION, PROTO_ALARM):
+            elif frame.protocol in (PROTO_LOCATION, PROTO_LOCATION_ACC, PROTO_ALARM):
                 if not self.device_id:
                     log.warning("Location packet before login -- dropping frame")
                     continue
-                event = decode_location(frame.content, self.device_id)
+                event = decode_location(frame.content, self.device_id, frame.protocol)
                 if event is not None:
                     if frame.protocol == PROTO_ALARM:
                         event.event_type = "alarm"
                     publishes.append(self._publish(event))
                 acks.append(frame)
 
+            elif frame.protocol == PROTO_LBS:
+                if not self.device_id:
+                    log.warning("LBS packet before login -- dropping frame")
+                    continue
+                # No coordinates, so nothing for device_locations: logged for
+                # now, and ACKed so the device stops resending it.
+                report = decode_lbs(frame.content, self.device_id)
+                if report is not None:
+                    log.info(
+                        "LBS from %s: mcc=%d mnc=%d lac=%d cell_id=%d signal=%s",
+                        report.device_id,
+                        report.mcc,
+                        report.mnc,
+                        report.lac,
+                        report.cell_id,
+                        report.signal,
+                    )
+                acks.append(frame)
+
             elif frame.protocol == PROTO_HEARTBEAT:
                 log.debug("Heartbeat from %s", self.device_id)
+                status = decode_heartbeat(frame.content, self.device_id) if self.device_id else None
+                if status is not None:
+                    publishes.append(self._publish_status(status))
                 acks.append(frame)
 
             else:
@@ -137,6 +163,13 @@ class DeviceSession:
         except Exception:
             log.exception("Failed to publish event for %s", event.device_id)
 
+    async def _publish_status(self, status: StatusEvent) -> None:
+        try:
+            await self.sink.publish_status(status)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Failed to record ignition for %s", status.device_id)
 
 def _log_startup_banner(server: asyncio.AbstractServer, config: Config) -> None:
     """

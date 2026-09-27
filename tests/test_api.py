@@ -115,6 +115,51 @@ class TestIngestValidation(ApiTestCase):
         self.assertTrue(body["gps_fixed"])
 
 
+    async def test_cell_fields_round_trip_and_default_to_null(self):
+        cell = {"mcc": 404, "mnc": 45, "lac": 4101, "cell_id": 21635}
+        await self.ingest({**FIX, **cell})
+        await self.ingest({"device_id": "d9", "latitude": 1.0, "longitude": 2.0})
+        with_cell = (
+            await self.client.get(f"{BASE}/devices/{FIX['device_id']}/latest", headers=self.auth())
+        ).json()
+        without = (await self.client.get(f"{BASE}/devices/d9/latest", headers=self.auth())).json()
+        self.assertEqual({k: with_cell[k] for k in cell}, cell)
+        self.assertEqual({k: without[k] for k in cell}, dict.fromkeys(cell))
+
+    async def test_ignition_is_stored_per_fix_and_as_current_state(self):
+        await self.ingest({**FIX, "ignition": True})
+        first = (await self.client.get(f"{BASE}/devices", headers=self.auth())).json()[0]
+        self.assertTrue(first["ignition"])
+        changed_at = first["ignition_changed_at"]
+        self.assertIsNotNone(changed_at)
+
+        # Unknown (omitted) is not "off": current state and its time stay put.
+        await self.ingest(FIX)
+        latest = (
+            await self.client.get(f"{BASE}/devices/{FIX['device_id']}/latest", headers=self.auth())
+        ).json()
+        self.assertIsNone(latest["ignition"])
+        # A repeat of the same state is not a change either.
+        await self.ingest({**FIX, "ignition": True})
+        device = (await self.client.get(f"{BASE}/devices", headers=self.auth())).json()[0]
+        self.assertEqual((device["ignition"], device["ignition_changed_at"]), (True, changed_at))
+
+        await self.ingest({**FIX, "ignition": False})
+        device = (await self.client.get(f"{BASE}/devices", headers=self.auth())).json()[0]
+        self.assertFalse(device["ignition"])
+        self.assertGreater(device["ignition_changed_at"], changed_at)
+
+    async def test_ignition_is_null_for_a_device_that_never_reported_it(self):
+        await self.ingest()
+        device = (await self.client.get(f"{BASE}/devices", headers=self.auth())).json()[0]
+        self.assertIsNone(device["ignition"])
+        self.assertIsNone(device["ignition_changed_at"])
+
+    async def test_rejects_an_out_of_range_mcc(self):
+        response = await self.ingest({**FIX, "mcc": 1000})
+        self.assertEqual(response.status_code, 422)
+
+
 class TestReadEndpoints(ApiTestCase):
     async def test_latest_returns_the_most_recent_fix(self):
         await self.ingest()
@@ -824,6 +869,8 @@ class TestAdminOnboarding(ApiTestCase):
                     "icon": "car",
                     "halted_since": None,
                     "owner_username": "dispatcher",
+                    "ignition": None,
+                    "ignition_changed_at": None,
                 }
             ],
         )
