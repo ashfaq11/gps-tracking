@@ -8,9 +8,11 @@ lets the API (and its tests) run with no database at all.
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, Protocol
 
+from .reports import HALT_THRESHOLD, MAX_RUNNING_GAP, ReportFix, summarize_device
 from .schemas import (
     DEFAULT_VEHICLE_ICON,
     DeviceOut,
+    DeviceReport,
     DeviceSubscriptionHistoryOut,
     FixBucket,
     LocationIn,
@@ -116,6 +118,14 @@ class LocationRepository(Protocol):
     async def fixes_over_time(
         self, hours: int, bucket_minutes: int, device_ids: frozenset[str] | None = None
     ) -> list[FixBucket]: ...
+
+    async def trip_report(
+        self, since: datetime, until: datetime, device_ids: frozenset[str] | None = None
+    ) -> list[DeviceReport]:
+        """Per-vehicle trips in [since, until], by api/reports.py's rules --
+        longest distance first. Lapsed subscriptions are left out, as in
+        summary()."""
+        ...
 
     async def ping(self) -> bool: ...
 
@@ -335,6 +345,25 @@ class InMemoryLocationRepository:
             offset = (row.received_at - cutoff) // width
             counts[cutoff + offset * width] = counts.get(cutoff + offset * width, 0) + 1
         return [FixBucket(bucket=b, fixes=c) for b, c in sorted(counts.items())]
+
+    async def trip_report(
+        self, since: datetime, until: datetime, device_ids: frozenset[str] | None = None
+    ) -> list[DeviceReport]:
+        by_device: dict[str, list[LocationOut]] = {}
+        for row in self._rows:
+            if device_ids is not None and row.device_id not in device_ids:
+                continue
+            if not self._sub_active(row.device_id) or not since <= row.received_at <= until:
+                continue
+            by_device.setdefault(row.device_id, []).append(row)
+        reports = []
+        for device_id, rows in by_device.items():
+            rows.sort(key=lambda r: (r.received_at, r.id))
+            trips = summarize_device(
+                [ReportFix(r.latitude, r.longitude, r.speed_kmh, r.received_at) for r in rows]
+            )
+            reports.append(DeviceReport(device_id=device_id, **vars(trips)))
+        return sorted(reports, key=lambda r: (-r.distance_km, r.device_id))
 
     async def ping(self) -> bool:
         return True
@@ -674,6 +703,98 @@ class PostgresLocationRepository:
                 list(device_ids) if device_ids is not None else None,
             )
         return [FixBucket(**dict(r)) for r in rows]
+
+    async def trip_report(
+        self, since: datetime, until: datetime, device_ids: frozenset[str] | None = None
+    ) -> list[DeviceReport]:
+        # One pass, in the database: LAG pairs each fix with the one before
+        # it for distance and running time, and a running count of moving
+        # fixes numbers the stationary runs between them, so every run of
+        # consecutive stopped fixes shares a `grp`. Same rules, one for one,
+        # as api/reports.py's summarize_device -- tests compare the two.
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH f AS (
+                    SELECT device_id, id, latitude, longitude, speed_kmh, received_at,
+                           COALESCE(speed_kmh, 0)                     AS speed,
+                           LAG(latitude) OVER w                       AS p_lat,
+                           LAG(longitude) OVER w                      AS p_lon,
+                           LAG(received_at) OVER w                    AS p_at,
+                           LAG(COALESCE(speed_kmh, 0)) OVER w         AS p_speed
+                    FROM device_locations dl
+                    WHERE received_at >= $1 AND received_at <= $2
+                      AND ($3::text[] IS NULL OR device_id = ANY($3::text[]))
+                      AND NOT EXISTS (
+                          SELECT 1 FROM device_subscriptions ds
+                          WHERE ds.device_id = dl.device_id AND ds.subscription_end_date <= now()
+                      )
+                    WINDOW w AS (PARTITION BY device_id ORDER BY received_at, id)
+                ),
+                seg AS (
+                    SELECT f.*,
+                           CASE WHEN p_lat IS NULL THEN 0 ELSE
+                               2 * 6371000 * asin(least(1, sqrt(
+                                   power(sin(radians(latitude - p_lat) / 2), 2)
+                                   + cos(radians(p_lat)) * cos(radians(latitude))
+                                     * power(sin(radians(longitude - p_lon) / 2), 2)
+                               )))
+                           END                                        AS metres,
+                           CASE WHEN p_speed > 0 AND received_at - p_at <= $5
+                                THEN extract(epoch FROM received_at - p_at) ELSE 0
+                           END                                        AS running_s,
+                           count(*) FILTER (WHERE speed > 0) OVER (
+                               PARTITION BY device_id ORDER BY received_at, id
+                           )                                          AS grp
+                    FROM f
+                ),
+                halts AS (
+                    SELECT device_id, extract(epoch FROM max(received_at) - min(received_at)) AS secs
+                    FROM seg
+                    WHERE speed = 0
+                    GROUP BY device_id, grp
+                    HAVING count(*) >= 2 AND max(received_at) - min(received_at) >= $4
+                ),
+                halt_totals AS (
+                    SELECT device_id, count(*) AS n, sum(secs) AS secs, max(secs) AS longest
+                    FROM halts GROUP BY device_id
+                )
+                SELECT s.device_id,
+                       sum(s.metres) / 1000                     AS distance_km,
+                       max(s.speed_kmh)                         AS max_speed_kmh,
+                       sum(s.running_s) / 60                    AS running_minutes,
+                       COALESCE(max(h.n), 0)                    AS halt_count,
+                       COALESCE(max(h.secs), 0) / 60            AS halt_minutes,
+                       COALESCE(max(h.longest), 0) / 60         AS longest_halt_minutes,
+                       count(*)                                 AS fix_count,
+                       min(s.received_at)                       AS first_fix_at,
+                       max(s.received_at)                       AS last_fix_at
+                FROM seg s
+                LEFT JOIN halt_totals h ON h.device_id = s.device_id
+                GROUP BY s.device_id
+                ORDER BY distance_km DESC, s.device_id
+                """,
+                since,
+                until,
+                list(device_ids) if device_ids is not None else None,
+                HALT_THRESHOLD,
+                MAX_RUNNING_GAP,
+            )
+        return [
+            DeviceReport(
+                device_id=r["device_id"],
+                distance_km=float(r["distance_km"]),
+                max_speed_kmh=r["max_speed_kmh"],
+                running_minutes=float(r["running_minutes"]),
+                halt_count=r["halt_count"],
+                halt_minutes=float(r["halt_minutes"]),
+                longest_halt_minutes=float(r["longest_halt_minutes"]),
+                fix_count=r["fix_count"],
+                first_fix_at=r["first_fix_at"],
+                last_fix_at=r["last_fix_at"],
+            )
+            for r in rows
+        ]
 
     async def ping(self) -> bool:
         async with self._pool.acquire() as conn:
