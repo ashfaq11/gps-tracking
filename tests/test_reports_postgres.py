@@ -14,7 +14,7 @@ import random
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from api.reports import ReportFix, summarize_device
+from api.reports import ReportFix, fix_time, summarize_device
 
 DSN = os.environ.get("TEST_PG_DSN")
 PREFIX = "report-parity-"
@@ -57,13 +57,28 @@ class TestTripReportParity(unittest.IsolatedAsyncioTestCase):
                 if moving:
                     lat += rng.uniform(-0.002, 0.002)
                     lng += rng.uniform(-0.002, 0.002)
-                fixes.append(ReportFix(lat, lng, speed, at, gps_fixed))
-                rows.append((device_id, lat, lng, speed, at, gps_fixed))
-            expected[device_id] = summarize_device(fixes)
+                # When it reached us: mostly on time, sometimes a buffered
+                # backlog arriving much later, now and then no tracker time
+                # at all, or a tracker clock far enough off to be ignored.
+                fixed_at = at
+                received_at = at + timedelta(seconds=rng.choice([1, 2, 5, 5, 5, 600, 3600]))
+                clock = rng.random()
+                if clock < 0.05:
+                    fixed_at = None
+                elif clock < 0.08:
+                    fixed_at = received_at + timedelta(minutes=rng.choice([11, 90]))
+                elif clock < 0.10:
+                    fixed_at = received_at - timedelta(days=45)
+                effective = fix_time(fixed_at, received_at)
+                fixes.append((effective, len(fixes), ReportFix(lat, lng, speed, effective, gps_fixed)))
+                rows.append((device_id, lat, lng, speed, fixed_at, received_at, gps_fixed))
+            # Rows are inserted in this order, so insertion order is id order.
+            fixes.sort(key=lambda f: (f[0], f[1]))
+            expected[device_id] = summarize_device([f[2] for f in fixes])
         await self.pool.executemany(
             "INSERT INTO device_locations "
-            "(device_id, latitude, longitude, speed_kmh, received_at, gps_fixed) "
-            "VALUES ($1, $2, $3, $4, $5, $6)",
+            "(device_id, latitude, longitude, speed_kmh, fixed_at, received_at, gps_fixed) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
             rows,
         )
 
