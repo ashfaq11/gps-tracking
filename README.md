@@ -355,6 +355,16 @@ Note the collection only covers the HTTP API. GT06 trackers never touch it —
 they speak binary over TCP to the gateway on :5023, which Postman cannot
 send. Use `python3 tools/simulate_device.py` for that side.
 
+## Deployment on AWS (API + gateway in Docker, auto-deploy)
+
+The production API runs on an AWS server alongside the gateway, both in
+Docker, deployed by [`deploy/aws/deploy.sh`](deploy/aws/deploy.sh) and, once
+its secrets are set, automatically on every merge to `main` by
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). Setup, the
+env file, secrets and rollback: [`deploy/aws/README.md`](deploy/aws/README.md).
+
+The Oracle Cloud + Vercel layout below remains a supported alternative.
+
 ## Deployment (Oracle Cloud + Vercel + Supabase)
 
 ```

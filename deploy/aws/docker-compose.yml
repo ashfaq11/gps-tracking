@@ -1,0 +1,66 @@
+# API + GT06 gateway on one AWS server (the host the dashboard's Cloudflare
+# worker points at). Deployed by deploy/aws/deploy.sh; see README.md here.
+#
+#   docker compose -f deploy/aws/docker-compose.yml --env-file /etc/gps-tracking.env up -d
+#
+# Secrets come from the env file, never from git. The same file is handed to
+# both containers, so each reads the variables it needs and ignores the rest.
+
+x-common: &common
+  restart: unless-stopped
+  env_file: ${GPS_ENV_FILE:-/etc/gps-tracking.env}
+  # Lets PG_DSN name a Postgres running on this same server as
+  # host.docker.internal -- inside a container, localhost is the container.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  api:
+    <<: *common
+    build:
+      context: ../..
+      dockerfile: Dockerfile.api
+    image: gps-api:latest
+    container_name: gps-api
+    ports:
+      - "${API_PUBLISH_PORT:-8000}:8000"
+
+  gateway:
+    <<: *common
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: gps-gateway:latest
+    container_name: gps-gateway
+    ports:
+      - "${GATEWAY_PUBLISH_PORT:-5023}:5023"
+    environment:
+      GATEWAY_HOST: "0.0.0.0"
+      GATEWAY_PORT: "5023"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import socket;socket.create_connection(('127.0.0.1',5023),3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Applies sql/schema.sql (idempotent) -- run by deploy.sh before the new
+  # containers start, never by `up`. psql comes from the image, so the
+  # server needs no Postgres client of its own.
+  migrate:
+    <<: *common
+    restart: "no"
+    image: postgres:16-alpine
+    profiles: ["tools"]
+    volumes:
+      - ../../sql:/sql:ro
+    # PG_DSN is read from the environment inside the container rather than
+    # interpolated here, so the password never shows in `docker inspect`
+    # args or the process list.
+    entrypoint: ["sh", "-c", 'psql "$$PG_DSN" -v ON_ERROR_STOP=1 -q -f /sql/schema.sql']

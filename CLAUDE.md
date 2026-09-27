@@ -55,6 +55,11 @@ python3 tools/export_openapi.py [--format yaml]
 
 # Generate a VAPID key pair for Web Push
 python -m api.push genkey
+
+# Production deploy (AWS server, Docker): pull main, build, apply schema,
+# restart, health-check. Also run by .github/workflows/deploy.yml on every
+# push to main once its secrets are set -- see deploy/aws/README.md.
+./deploy/aws/deploy.sh
 ```
 
 IDE run configs exist for both IntelliJ (`.idea/runConfigurations/`) and VS

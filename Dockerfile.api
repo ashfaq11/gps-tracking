@@ -1,0 +1,31 @@
+# Image for the REST API on a long-running host (deploy/aws).
+#
+# Vercel deploys the same code without this file. A container is what runs
+# the parts serverless cannot: the Web Push listener and the live-map
+# WebSocket both need a process that stays up (see CLAUDE.md).
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    API_HOST=0.0.0.0 \
+    API_PORT=8000
+
+WORKDIR /app
+
+# requirements.txt is kept lean for Vercel and so leaves out the server;
+# uvicorn[standard] adds it along with WebSocket support for /ws/live.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt "uvicorn[standard]>=0.27"
+
+COPY api/ ./api/
+
+# Same reasoning as the gateway image: this answers the internet directly.
+RUN useradd --create-home --uid 10001 api
+USER api
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4)"]
+
+CMD ["python", "-m", "api"]
