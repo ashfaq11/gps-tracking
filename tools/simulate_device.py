@@ -2,6 +2,7 @@
 Fake GT06 tracker -- exercises the gateway without real hardware.
 
     python tools/simulate_device.py --host 127.0.0.1 --port 5023 --pings 5
+    python tools/simulate_device.py --protocol 0x22   # newer Concox, ACC byte
 
 Sends a login, then location frames with the latitude drifting north each
 ping (simulated movement), with a heartbeat in between. Frames are built by
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gps_gateway.protocol import (  # noqa: E402
     PROTO_HEARTBEAT,
     PROTO_LOCATION,
+    PROTO_LOCATION_ACC,
     PROTO_LOGIN,
     build_frame,
 )
@@ -31,6 +33,8 @@ _COORD_SCALE = 30000.0 * 60.0
 SERVING_CELL = bytes.fromhex("0194" "2D" "1005" "005483")
 # Terminal info 0x46 (GPS tracking, charging, ACC on), voltage 4, GSM 4.
 HEARTBEAT_ACC_ON = bytes.fromhex("46" "04" "04" "0001")
+# 0x22 trailer: ACC on, upload reason 0x00 (timed), real-time (not re-upload).
+ACC_TRAILER_ON = bytes.fromhex("01" "00" "00")
 
 
 def location_content(lat: float, lon: float, speed_kmh: int, course_deg: int) -> bytes:
@@ -62,7 +66,9 @@ async def read_ack(reader: asyncio.StreamReader, label: str) -> None:
         print(f"  {label}: ACK proto=0x{frame.protocol:02X} serial={frame.serial} ({status})")
 
 
-async def simulate(host: str, port: int, imei: str, pings: int, interval: float) -> None:
+async def simulate(
+    host: str, port: int, imei: str, pings: int, interval: float, protocol: int
+) -> None:
     reader, writer = await asyncio.open_connection(host, port)
     print(f"Connected to {host}:{port} as IMEI {imei}")
     serial = 1
@@ -78,7 +84,9 @@ async def simulate(host: str, port: int, imei: str, pings: int, interval: float)
             serial += 1
             lat += 0.0009  # drift roughly 100 m north per ping
             content = location_content(lat, lon, speed_kmh=42, course_deg=15)
-            writer.write(build_frame(PROTO_LOCATION, serial, content))
+            if protocol == PROTO_LOCATION_ACC:
+                content += ACC_TRAILER_ON
+            writer.write(build_frame(protocol, serial, content))
             await writer.drain()
             print(f"Sent location {i + 1}/{pings}: {lat:.6f}, {lon:.6f}")
             await read_ack(reader, "location")
@@ -105,13 +113,23 @@ def parse_args():
     parser.add_argument("--imei", default="868120303372449")
     parser.add_argument("--pings", type=int, default=5)
     parser.add_argument("--interval", type=float, default=1.0, help="seconds between pings")
+    parser.add_argument(
+        "--protocol",
+        type=lambda v: int(v, 0),
+        choices=(PROTO_LOCATION, PROTO_LOCATION_ACC),
+        default=PROTO_LOCATION,
+        metavar="{0x12,0x22}",
+        help="location packet type: 0x12 (classic GT06) or 0x22 (with ACC byte)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
     try:
-        asyncio.run(simulate(args.host, args.port, args.imei, args.pings, args.interval))
+        asyncio.run(
+            simulate(args.host, args.port, args.imei, args.pings, args.interval, args.protocol)
+        )
     except KeyboardInterrupt:
         pass
     except ConnectionRefusedError:

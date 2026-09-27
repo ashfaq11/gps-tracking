@@ -5,7 +5,7 @@ import struct
 from datetime import datetime, timezone
 
 from ..models import CellReport, LocationEvent, StatusEvent
-from .constants import START_SHORT, STOP_BITS
+from .constants import PROTO_ALARM, PROTO_LOCATION, PROTO_LOCATION_ACC, START_SHORT, STOP_BITS
 from .crc import crc16_itu
 
 log = logging.getLogger(__name__)
@@ -111,18 +111,19 @@ def decode_heartbeat(content: bytes, device_id: str) -> StatusEvent | None:
 
 
 def decode_location(
-    content: bytes, device_id: str, *, lbs_length_prefix: bool = False
+    content: bytes, device_id: str, protocol: int = PROTO_LOCATION
 ) -> LocationEvent | None:
     """
-    Location payload layout (first 18 bytes; some devices append extras):
+    Location, alarm and ACC-location packets share their first 18 bytes:
       [6B date/time][1B gps info + sat count][4B lat][4B lon][1B speed][2B course+flags]
 
-    Most devices follow it with the serving cell, [2B MCC][1B MNC][2B LAC][3B
-    CellID], decoded when present.
-
-    Alarm packets (0x16) differ, hence `lbs_length_prefix`: a length byte
-    (counting itself, so 9 for a plain cell, 0 for none) precedes the cell,
-    and the terminal info byte -- which carries ignition -- follows it.
+    What follows depends on `protocol`, and is decoded when present:
+      0x12  [cell]
+      0x22  [cell][1B ACC][1B upload reason][1B re-upload flag][4B mileage, optional]
+      0x16  [1B LBS length][cell][1B terminal info][1B voltage][1B GSM][2B alarm]
+    where [cell] is [2B MCC][1B MNC][2B LAC][3B CellID]. The alarm's LBS
+    length counts itself (9 for a plain cell, 0 for none), and its terminal
+    info byte carries ignition in bit 1.
     """
     if len(content) < LOCATION_MIN_LEN:
         log.warning("Location content too short (%d bytes) for %s", len(content), device_id)
@@ -152,8 +153,13 @@ def decode_location(
         return None
 
     cell, ignition = None, None
-    if not lbs_length_prefix:
-        cell, _ = _decode_cell(content[LOCATION_MIN_LEN:])
+    if protocol != PROTO_ALARM:
+        tail = content[LOCATION_MIN_LEN:]
+        cell, consumed = _decode_cell(tail)
+        # `consumed` is 0 only for a truncated cell, and then the offset of
+        # the ACC byte is unknown -- guessing would store noise as ignition.
+        if protocol == PROTO_LOCATION_ACC and consumed and len(tail) > consumed:
+            ignition = tail[consumed] != 0
     elif len(content) > LOCATION_MIN_LEN:
         lbs_len = content[LOCATION_MIN_LEN]
         if lbs_len:

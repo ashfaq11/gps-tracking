@@ -12,6 +12,7 @@ from .protocol import (
     PROTO_HEARTBEAT,
     PROTO_LBS,
     PROTO_LOCATION,
+    PROTO_LOCATION_ACC,
     PROTO_LOGIN,
     build_ack,
     decode_heartbeat,
@@ -106,15 +107,11 @@ class DeviceSession:
                 log.info("Device logged in: %s", self.device_id)
                 acks.append(frame)
 
-            elif frame.protocol in (PROTO_LOCATION, PROTO_ALARM):
+            elif frame.protocol in (PROTO_LOCATION, PROTO_LOCATION_ACC, PROTO_ALARM):
                 if not self.device_id:
                     log.warning("Location packet before login -- dropping frame")
                     continue
-                event = decode_location(
-                    frame.content,
-                    self.device_id,
-                    lbs_length_prefix=frame.protocol == PROTO_ALARM,
-                )
+                event = decode_location(frame.content, self.device_id, frame.protocol)
                 if event is not None:
                     if frame.protocol == PROTO_ALARM:
                         event.event_type = "alarm"

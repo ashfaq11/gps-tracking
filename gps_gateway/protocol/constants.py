@@ -23,6 +23,9 @@ TRAILER_LEN = 4
 
 PROTO_LOGIN = 0x01
 PROTO_LOCATION = 0x12
+# Newer Concox firmware (GT06N, JM-series): the 0x12 layout plus an explicit
+# ACC byte, upload reason and real-time/re-upload flag after the cell.
+PROTO_LOCATION_ACC = 0x22
 PROTO_HEARTBEAT = 0x13
 PROTO_ALARM = 0x16
 PROTO_LBS = 0x18

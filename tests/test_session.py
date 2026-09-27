@@ -8,6 +8,7 @@ from gps_gateway.protocol import (
     PROTO_HEARTBEAT,
     PROTO_LBS,
     PROTO_LOCATION,
+    PROTO_LOCATION_ACC,
     PROTO_LOGIN,
     build_frame,
 )
@@ -132,6 +133,21 @@ class TestDeviceSession(unittest.IsolatedAsyncioTestCase):
         await self.feed(build_frame(PROTO_LOCATION, serial=2, content=SAMPLE_LOCATION + SAMPLE_CELL))
         event = self.sink.events[0]
         self.assertEqual((event.mcc, event.mnc, event.lac, event.cell_id), (460, 0, 10365, 8120))
+
+    async def test_acc_location_is_published_with_ignition_and_acked(self):
+        content = SAMPLE_LOCATION + SAMPLE_CELL + bytes.fromhex("01" "00" "00")
+        await self.feed(build_frame(PROTO_LOGIN, serial=1, content=IMEI_BYTES))
+        await self.feed(build_frame(PROTO_LOCATION_ACC, serial=2, content=content))
+        event = self.sink.events[0]
+        self.assertEqual((event.device_id, event.event_type, event.ignition), (IMEI, "location", True))
+        self.assertEqual(event.cell_id, 8120)
+        ack = acks_in(self.writer)[-1]
+        self.assertEqual((ack.protocol, ack.serial), (PROTO_LOCATION_ACC, 2))
+
+    async def test_acc_location_before_login_is_dropped_and_not_acked(self):
+        content = SAMPLE_LOCATION + SAMPLE_CELL + bytes.fromhex("01" "00" "00")
+        await self.feed(build_frame(PROTO_LOCATION_ACC, serial=1, content=content))
+        self.assertEqual((self.sink.events, self.writer.sent), ([], b""))
 
     async def test_alarm_cell_is_read_past_its_length_byte(self):
         content = SAMPLE_LOCATION + b"\x09" + SAMPLE_CELL + b"\x46\x06\x04\x00\x01"

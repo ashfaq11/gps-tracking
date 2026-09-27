@@ -506,11 +506,13 @@ dependencies.
    mainstream spec (bit 10 north, bit 11 west, bit 12 fix valid). Capture your
    actual hardware with `tcpdump` before trusting them.
 2. **Extended fields** — past byte 18 only the serving cell (MCC, MNC, LAC,
-   CellID) and, in alarms, the ignition bit are decoded; mileage, voltage, GSM
-   signal and alarm codes are not. Ignition comes from heartbeat and alarm
-   status bytes only: protocol `0x22` packets, which carry an ACC byte of
-   their own, are not handled at all yet. `device_status` keeps only the
-   current state and when it last changed, not a history of every flip. `79 79`
+   CellID) and ignition are decoded; mileage, voltage, GSM signal and alarm
+   codes are not. Ignition comes from heartbeats, alarms and the ACC byte of
+   newer Concox `0x22` location packets; classic `0x12` packets carry none.
+   The `0x22` upload reason and re-upload flag are skipped, so a fix a device
+   buffered while offline is stored like a live one. `device_status` keeps
+   only the current state and when it last changed, not a history of every
+   flip. `79 79`
    extended frames are reassembled but their extra payload is not decoded.
    LBS-only packets (`0x18`, no GPS fix) are decoded, logged and ACKed but not
    stored: `device_locations` needs coordinates, and turning a cell into one

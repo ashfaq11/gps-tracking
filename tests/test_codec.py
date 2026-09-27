@@ -2,6 +2,8 @@ import unittest
 from datetime import datetime, timezone
 
 from gps_gateway.protocol import (
+    PROTO_ALARM,
+    PROTO_LOCATION_ACC,
     build_ack,
     decode_heartbeat,
     decode_lbs,
@@ -137,7 +139,7 @@ class TestDecodeCell(unittest.TestCase):
 
     def test_alarm_packets_skip_the_lbs_length_byte(self):
         content = SAMPLE_LOCATION + b"\x09" + SAMPLE_CELL + b"\x44\x06\x04\x00\x01"
-        event = decode_location(content, "dev1", lbs_length_prefix=True)
+        event = decode_location(content, "dev1", PROTO_ALARM)
         self.assertEqual((event.mcc, event.mnc, event.lac, event.cell_id), (460, 0, 10365, 8120))
 
     def test_an_all_zero_cell_is_no_cell(self):
@@ -173,14 +175,14 @@ class TestIgnition(unittest.TestCase):
 
     def test_alarm_reads_ignition_after_the_cell(self):
         content = SAMPLE_LOCATION + b"\x09" + SAMPLE_CELL + b"\x46\x06\x04\x01\x01"
-        event = decode_location(content, "dev1", lbs_length_prefix=True)
+        event = decode_location(content, "dev1", PROTO_ALARM)
         self.assertTrue(event.ignition)
         self.assertEqual(event.cell_id, 8120)
 
     def test_alarm_without_a_cell_reads_ignition_right_after_the_length(self):
         # LBS length 0: no cell, and the status byte must not be misread as one.
         content = SAMPLE_LOCATION + b"\x00" + b"\x44\x06\x04\x01\x01"
-        event = decode_location(content, "dev1", lbs_length_prefix=True)
+        event = decode_location(content, "dev1", PROTO_ALARM)
         self.assertFalse(event.ignition)
         self.assertIsNone(event.mcc)
 
@@ -189,7 +191,57 @@ class TestIgnition(unittest.TestCase):
 
     def test_an_alarm_cut_short_before_the_status_reports_none(self):
         content = SAMPLE_LOCATION + b"\x09" + SAMPLE_CELL
-        self.assertIsNone(decode_location(content, "dev1", lbs_length_prefix=True).ignition)
+        self.assertIsNone(decode_location(content, "dev1", PROTO_ALARM).ignition)
+
+
+class TestDecodeAccLocation(unittest.TestCase):
+    """Protocol 0x22: position, cell, then ACC / upload reason / re-upload flag."""
+
+    def test_decodes_position_cell_and_ignition(self):
+        content = SAMPLE_LOCATION + SAMPLE_CELL + bytes.fromhex("01" "00" "00")
+        event = decode_location(content, "dev1", PROTO_LOCATION_ACC)
+        self.assertAlmostEqual(event.latitude, 23.11, places=2)
+        self.assertEqual((event.mcc, event.mnc, event.lac, event.cell_id), (460, 0, 10365, 8120))
+        self.assertTrue(event.ignition)
+        self.assertEqual(event.event_type, "location")
+
+    def test_acc_zero_is_ignition_off(self):
+        content = SAMPLE_LOCATION + SAMPLE_CELL + bytes.fromhex("00" "03" "00")
+        self.assertFalse(decode_location(content, "dev1", PROTO_LOCATION_ACC).ignition)
+
+    def test_trailing_mileage_is_ignored(self):
+        content = SAMPLE_LOCATION + SAMPLE_CELL + bytes.fromhex("01" "00" "00" "0001E240")
+        self.assertTrue(decode_location(content, "dev1", PROTO_LOCATION_ACC).ignition)
+
+    def test_acc_follows_a_two_byte_mnc(self):
+        cell = bytes.fromhex("8194" "0356" "1005" "005483")
+        content = SAMPLE_LOCATION + cell + bytes.fromhex("01" "00" "00")
+        event = decode_location(content, "dev1", PROTO_LOCATION_ACC)
+        self.assertEqual(event.mnc, 854)
+        self.assertTrue(event.ignition)
+
+    def test_acc_still_read_when_the_cell_is_all_zero(self):
+        # No GSM registration zeroes the cell but it keeps its 8 bytes.
+        content = SAMPLE_LOCATION + b"\x00" * 8 + bytes.fromhex("01" "00" "00")
+        event = decode_location(content, "dev1", PROTO_LOCATION_ACC)
+        self.assertIsNone(event.mcc)
+        self.assertTrue(event.ignition)
+
+    def test_no_ignition_when_the_packet_stops_after_the_cell(self):
+        content = SAMPLE_LOCATION + SAMPLE_CELL
+        self.assertIsNone(decode_location(content, "dev1", PROTO_LOCATION_ACC).ignition)
+
+    def test_no_ignition_when_the_cell_is_truncated(self):
+        # Where the ACC byte would sit is unknown, so nothing is guessed.
+        content = SAMPLE_LOCATION + SAMPLE_CELL[:5]
+        event = decode_location(content, "dev1", PROTO_LOCATION_ACC)
+        self.assertIsNotNone(event)
+        self.assertIsNone(event.ignition)
+
+    def test_a_classic_location_never_reads_the_byte_after_the_cell(self):
+        # Some 0x12 clones append bytes here too; they are not an ACC byte.
+        content = SAMPLE_LOCATION + SAMPLE_CELL + b"\x01"
+        self.assertIsNone(decode_location(content, "dev1").ignition)
 
 
 class TestDecodeLbs(unittest.TestCase):
