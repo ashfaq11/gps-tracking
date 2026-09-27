@@ -1,3 +1,5 @@
+# api/ is not excluded: Dockerfile.api builds it (deploy/aws). The gateway
+# image copies only gps_gateway/ and sql/, so it stays as small as before.
 .git/
 .idea/
 .vscode/
@@ -8,8 +10,9 @@ venv/
 tests/
 tools/
 postman/
-api/
 *.md
 openapi.json
 vercel.json
 .vercelignore
+logs/
+.ruff_cache/

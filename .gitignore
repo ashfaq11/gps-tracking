@@ -17,3 +17,6 @@ sql/*_[0-9]*.sql
 
 # Local secrets (VAPID keys etc.) -- never commit
 .env.local
+
+# Per-server compose tweaks, layered on by deploy/aws/deploy.sh.
+deploy/aws/docker-compose.override.yml
