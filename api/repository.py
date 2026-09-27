@@ -21,7 +21,7 @@ from .schemas import (
 
 _COLUMNS = (
     "id, device_id, latitude, longitude, speed_kmh, course_deg, "
-    "gps_fixed, satellites, fixed_at, received_at"
+    "gps_fixed, satellites, fixed_at, received_at, mcc, mnc, lac, cell_id"
 )
 
 
@@ -442,8 +442,9 @@ class PostgresLocationRepository:
                 f"""
                 INSERT INTO device_locations
                     (device_id, latitude, longitude, speed_kmh, course_deg,
-                     gps_fixed, satellites, fixed_at, received_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+                     gps_fixed, satellites, fixed_at, received_at,
+                     mcc, mnc, lac, cell_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, $10, $11, $12)
                 RETURNING {_COLUMNS}
                 """,
                 location.device_id,
@@ -454,6 +455,10 @@ class PostgresLocationRepository:
                 location.gps_fixed,
                 location.satellites,
                 location.fixed_at,
+                location.mcc,
+                location.mnc,
+                location.lac,
+                location.cell_id,
             )
         return LocationOut(**dict(row))
 

@@ -10,9 +10,11 @@ from .models import LocationEvent
 from .protocol import (
     PROTO_ALARM,
     PROTO_HEARTBEAT,
+    PROTO_LBS,
     PROTO_LOCATION,
     PROTO_LOGIN,
     build_ack,
+    decode_lbs,
     decode_location,
     decode_login,
 )
@@ -107,11 +109,34 @@ class DeviceSession:
                 if not self.device_id:
                     log.warning("Location packet before login -- dropping frame")
                     continue
-                event = decode_location(frame.content, self.device_id)
+                event = decode_location(
+                    frame.content,
+                    self.device_id,
+                    lbs_length_prefix=frame.protocol == PROTO_ALARM,
+                )
                 if event is not None:
                     if frame.protocol == PROTO_ALARM:
                         event.event_type = "alarm"
                     publishes.append(self._publish(event))
+                acks.append(frame)
+
+            elif frame.protocol == PROTO_LBS:
+                if not self.device_id:
+                    log.warning("LBS packet before login -- dropping frame")
+                    continue
+                # No coordinates, so nothing for device_locations: logged for
+                # now, and ACKed so the device stops resending it.
+                report = decode_lbs(frame.content, self.device_id)
+                if report is not None:
+                    log.info(
+                        "LBS from %s: mcc=%d mnc=%d lac=%d cell_id=%d signal=%s",
+                        report.device_id,
+                        report.mcc,
+                        report.mnc,
+                        report.lac,
+                        report.cell_id,
+                        report.signal,
+                    )
                 acks.append(frame)
 
             elif frame.protocol == PROTO_HEARTBEAT:

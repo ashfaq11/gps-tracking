@@ -27,6 +27,8 @@ from gps_gateway.protocol.framing import FrameDecoder  # noqa: E402
 # Bit 10 = northern hemisphere, bit 11 clear = eastern, bit 12 = GPS fixed.
 FLAGS_N_E_FIXED = 0x1400
 _COORD_SCALE = 30000.0 * 60.0
+# MCC 404 (India), MNC 45, LAC 0x1005, CellID 0x005483.
+SERVING_CELL = bytes.fromhex("0194" "2D" "1005" "005483")
 
 
 def location_content(lat: float, lon: float, speed_kmh: int, course_deg: int) -> bytes:
@@ -40,6 +42,7 @@ def location_content(lat: float, lon: float, speed_kmh: int, course_deg: int) ->
         + int(abs(lon) * _COORD_SCALE).to_bytes(4, "big")
         + bytes([speed_kmh & 0xFF])
         + flags.to_bytes(2, "big")
+        + SERVING_CELL
     )
 
 

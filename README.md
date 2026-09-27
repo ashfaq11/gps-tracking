@@ -505,9 +505,13 @@ dependencies.
 1. **Protocol variants** — GT06 clones differ. Bit layouts here follow the
    mainstream spec (bit 10 north, bit 11 west, bit 12 fix valid). Capture your
    actual hardware with `tcpdump` before trusting them.
-2. **Extended fields** — mileage, ACC and alarm codes past byte 18 are parsed
-   as far as position only. `79 79` extended frames are reassembled but their
-   extra payload is not decoded.
+2. **Extended fields** — past byte 18 only the serving cell (MCC, MNC, LAC,
+   CellID) is decoded and stored; mileage, ACC and alarm codes are not. `79 79`
+   extended frames are reassembled but their extra payload is not decoded.
+   LBS-only packets (`0x18`, no GPS fix) are decoded, logged and ACKed but not
+   stored: `device_locations` needs coordinates, and turning a cell into one
+   takes a geolocation service (OpenCellID, Google, Unwired Labs) not wired
+   in yet.
 3. **No device authentication** — the gateway trusts the IMEI in the login
    packet. Anyone who can reach the port can impersonate a device; keep it on
    a private segment and consider an IMEI allowlist.

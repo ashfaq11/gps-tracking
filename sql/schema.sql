@@ -23,6 +23,16 @@ CREATE TABLE IF NOT EXISTS device_locations (
 ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS satellites SMALLINT;
 ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS fixed_at TIMESTAMPTZ;
 
+-- Serving cell tower (LBS) the tracker reported alongside the fix: mobile
+-- country code, mobile network code, location/tracking area code, cell id.
+-- NULL together when the packet carried none. Kept on the fix itself, not in
+-- a side table, so both writers fill them the same way; they are what a
+-- geolocation lookup needs to place a device whose GPS fix is stale.
+ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS mcc     SMALLINT;
+ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS mnc     SMALLINT;
+ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS lac     INT;
+ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS cell_id BIGINT;
+
 -- The dashboard query is "latest fixes for this device", newest first.
 CREATE INDEX IF NOT EXISTS device_locations_device_time_idx
     ON device_locations (device_id, received_at DESC);
@@ -384,7 +394,11 @@ BEGIN
         'gps_fixed', NEW.gps_fixed,
         'satellites', NEW.satellites,
         'fixed_at', NEW.fixed_at,
-        'received_at', NEW.received_at
+        'received_at', NEW.received_at,
+        'mcc', NEW.mcc,
+        'mnc', NEW.mnc,
+        'lac', NEW.lac,
+        'cell_id', NEW.cell_id
     )::text);
     RETURN NEW;
 END;

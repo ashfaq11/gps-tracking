@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from gps_gateway.protocol import build_ack, decode_location, decode_login
+from gps_gateway.protocol import build_ack, decode_lbs, decode_location, decode_login
 
 # A real GT06 location payload (Shenzhen, 2015-12-29 02:51:05 UTC):
 #   0F 0C 1D 02 33 05  date/time
@@ -11,6 +11,13 @@ from gps_gateway.protocol import build_ack, decode_location, decode_login
 #   00                 speed km/h
 #   14 00              course + status flags
 SAMPLE_LOCATION = bytes.fromhex("0F0C1D023305" "C9" "027AC81F" "0C465860" "00" "1400")
+
+# Serving cell that follows the position in most location packets:
+#   01 CC   MCC 460 (China)
+#   00      MNC 0
+#   28 7D   LAC 10365
+#   00 1F B8  CellID 8120
+SAMPLE_CELL = bytes.fromhex("01CC" "00" "287D" "001FB8")
 
 
 def location_payload(flags: int, lat_raw: int = 0x027AC81F, lon_raw: int = 0x0C465860) -> bytes:
@@ -103,6 +110,70 @@ class TestDecodeLocation(unittest.TestCase):
     def test_rejects_out_of_range_coordinates(self):
         # A corrupt latitude that decodes past the pole must not be stored.
         self.assertIsNone(decode_location(location_payload(flags=0x1400, lat_raw=0xFFFFFFFF), "dev1"))
+
+
+class TestDecodeCell(unittest.TestCase):
+    def test_a_bare_location_has_no_cell(self):
+        event = decode_location(SAMPLE_LOCATION, "dev1")
+        self.assertIsNone(event.mcc)
+        self.assertIsNone(event.cell_id)
+
+    def test_decodes_the_cell_after_the_position(self):
+        event = decode_location(SAMPLE_LOCATION + SAMPLE_CELL, "dev1")
+        self.assertEqual((event.mcc, event.mnc, event.lac, event.cell_id), (460, 0, 10365, 8120))
+        # The position itself is untouched by the extra bytes.
+        self.assertAlmostEqual(event.latitude, 23.11, places=2)
+
+    def test_ignores_fields_after_the_cell(self):
+        # ACC, upload mode and mileage follow on some models.
+        event = decode_location(SAMPLE_LOCATION + SAMPLE_CELL + b"\x01\x00\x01", "dev1")
+        self.assertEqual(event.cell_id, 8120)
+
+    def test_alarm_packets_skip_the_lbs_length_byte(self):
+        content = SAMPLE_LOCATION + b"\x08" + SAMPLE_CELL + b"\x44\x06\x04\x00\x01"
+        event = decode_location(content, "dev1", lbs_length_prefix=True)
+        self.assertEqual((event.mcc, event.mnc, event.lac, event.cell_id), (460, 0, 10365, 8120))
+
+    def test_an_all_zero_cell_is_no_cell(self):
+        # What a tracker with no GSM registration sends.
+        event = decode_location(SAMPLE_LOCATION + b"\x00" * 8, "dev1")
+        self.assertIsNone(event.mcc)
+        self.assertIsNone(event.lac)
+
+    def test_a_truncated_cell_is_dropped_but_the_fix_kept(self):
+        event = decode_location(SAMPLE_LOCATION + SAMPLE_CELL[:5], "dev1")
+        self.assertIsNotNone(event)
+        self.assertIsNone(event.cell_id)
+
+    def test_mcc_high_bit_announces_a_two_byte_mnc(self):
+        # MCC 404 | 0x8000, MNC 0x0356 = 854, LAC 0x1005, CellID 0x005483.
+        cell = bytes.fromhex("8194" "0356" "1005" "005483")
+        event = decode_location(SAMPLE_LOCATION + cell, "dev1")
+        self.assertEqual((event.mcc, event.mnc, event.lac, event.cell_id), (404, 854, 4101, 21635))
+
+
+class TestDecodeLbs(unittest.TestCase):
+    STAMP = bytes.fromhex("1A091B0A0F1E")  # 2026-09-27 10:15:30 UTC
+
+    def test_decodes_serving_cell_signal_and_time(self):
+        neighbours = bytes.fromhex("287D001FB9" "2B") * 6
+        content = self.STAMP + SAMPLE_CELL + b"\x3C" + neighbours + b"\xFF" + b"\x00\x02"
+        report = decode_lbs(content, "dev1")
+        self.assertEqual(report.device_id, "dev1")
+        self.assertEqual((report.mcc, report.mnc, report.lac, report.cell_id), (460, 0, 10365, 8120))
+        self.assertEqual(report.signal, 0x3C)
+        self.assertEqual(report.reported_at, datetime(2026, 9, 27, 10, 15, 30, tzinfo=timezone.utc))
+
+    def test_signal_is_optional(self):
+        report = decode_lbs(self.STAMP + SAMPLE_CELL, "dev1")
+        self.assertEqual(report.cell_id, 8120)
+        self.assertIsNone(report.signal)
+
+    def test_rejects_truncated_content(self):
+        self.assertIsNone(decode_lbs(self.STAMP + SAMPLE_CELL[:7], "dev1"))
+
+    def test_rejects_an_all_zero_cell(self):
+        self.assertIsNone(decode_lbs(self.STAMP + b"\x00" * 9, "dev1"))
 
 
 class TestBuildAck(unittest.TestCase):

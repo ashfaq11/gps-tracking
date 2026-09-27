@@ -29,6 +29,10 @@ class LocationIn(BaseModel):
                     "gps_fixed": True,
                     "satellites": 9,
                     "fixed_at": "2026-09-06T03:28:59Z",
+                    "mcc": 404,
+                    "mnc": 45,
+                    "lac": 4101,
+                    "cell_id": 21635,
                 }
             ]
         }
@@ -48,6 +52,16 @@ class LocationIn(BaseModel):
         description="When the device took the fix. Null if its clock was unset; "
         "fall back to received_at.",
     )
+    # Serving cell (LBS). Optional, and meaningful only as a set -- the same
+    # four fields the TCP gateway decodes from a GT06 packet.
+    mcc: int | None = Field(default=None, ge=0, le=999, description="Mobile country code.")
+    mnc: int | None = Field(default=None, ge=0, le=999, description="Mobile network code.")
+    lac: int | None = Field(
+        default=None, ge=0, le=0xFFFFFF, description="Location / tracking area code."
+    )
+    cell_id: int | None = Field(
+        default=None, ge=0, le=2**36 - 1, description="Cell id (GSM CI, LTE ECI or 5G NCI)."
+    )
 
 
 class LocationOut(BaseModel):
@@ -65,6 +79,10 @@ class LocationOut(BaseModel):
                     "satellites": 9,
                     "fixed_at": "2026-09-06T03:28:59Z",
                     "received_at": "2026-09-06T03:29:01.220Z",
+                    "mcc": 404,
+                    "mnc": 45,
+                    "lac": 4101,
+                    "cell_id": 21635,
                 }
             ]
         }
@@ -80,6 +98,10 @@ class LocationOut(BaseModel):
     satellites: int | None = None
     fixed_at: datetime | None = None
     received_at: datetime
+    mcc: int | None = None
+    mnc: int | None = None
+    lac: int | None = None
+    cell_id: int | None = None
 
 
 # Plain "active"/"expired" rather than a bare boolean -- the pairing every

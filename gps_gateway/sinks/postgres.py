@@ -25,11 +25,15 @@ _COLUMNS = (
     "satellites",
     "fixed_at",
     "received_at",
+    "mcc",
+    "mnc",
+    "lac",
+    "cell_id",
 )
 
 _INSERT = f"""
 INSERT INTO device_locations ({", ".join(_COLUMNS)})
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 """
 
 # SQLSTATE classes meaning "Postgres rejected this data" -- 22 data
@@ -65,6 +69,10 @@ def _record(event: LocationEvent) -> tuple:
         event.satellites,
         event.fixed_at,
         event.received_at,
+        event.mcc,
+        event.mnc,
+        event.lac,
+        event.cell_id,
     )
 
 

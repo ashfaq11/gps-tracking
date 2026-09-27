@@ -4,7 +4,7 @@ import logging
 import struct
 from datetime import datetime, timezone
 
-from ..models import LocationEvent
+from ..models import CellReport, LocationEvent
 from .constants import START_SHORT, STOP_BITS
 from .crc import crc16_itu
 
@@ -20,6 +20,15 @@ _BIT_WEST = 0x0800  # set => western hemisphere
 _BIT_GPS_FIXED = 0x1000  # set => GPS has a real fix
 
 LOCATION_MIN_LEN = 18
+
+# MCC(2) MNC(1) LAC(2) CellID(3); one byte longer when MNC takes two bytes.
+_CELL_LEN = 8
+# Set on the MCC word by newer Concox firmware to announce a two-byte MNC.
+# A real MCC never exceeds 999, so the bit cannot be mistaken for data.
+_BIT_MNC_2_BYTES = 0x8000
+
+# LBS-only content: 6-byte timestamp, then the serving cell.
+LBS_MIN_LEN = 6 + _CELL_LEN
 
 
 def bcd_to_int(byte_val: int) -> int:
@@ -55,10 +64,41 @@ def _decode_timestamp(content: bytes) -> datetime | None:
         return None
 
 
-def decode_location(content: bytes, device_id: str) -> LocationEvent | None:
+def _decode_cell(data: bytes) -> tuple[tuple[int, int, int, int] | None, int]:
+    """
+    Decode MCC, MNC, LAC and CellID from the start of `data`.
+
+    Returns ((mcc, mnc, lac, cell_id), bytes consumed). The cell is None if
+    the block is truncated (consumed 0) or all-zero -- which is what a tracker
+    with no GSM registration sends, and is no more a cell than an unset clock
+    is a date.
+    """
+    if len(data) < 2:
+        return None, 0
+    mcc = struct.unpack(">H", data[0:2])[0]
+    mnc_len = 2 if mcc & _BIT_MNC_2_BYTES else 1
+    mcc &= ~_BIT_MNC_2_BYTES & 0xFFFF
+    consumed = _CELL_LEN - 1 + mnc_len
+    if len(data) < consumed:
+        return None, 0
+    mnc = int.from_bytes(data[2 : 2 + mnc_len], "big")
+    lac = struct.unpack(">H", data[2 + mnc_len : 4 + mnc_len])[0]
+    cell_id = int.from_bytes(data[4 + mnc_len : consumed], "big")
+    if mcc == 0 and lac == 0 and cell_id == 0:
+        return None, consumed
+    return (mcc, mnc, lac, cell_id), consumed
+
+
+def decode_location(
+    content: bytes, device_id: str, *, lbs_length_prefix: bool = False
+) -> LocationEvent | None:
     """
     Location payload layout (first 18 bytes; some devices append extras):
       [6B date/time][1B gps info + sat count][4B lat][4B lon][1B speed][2B course+flags]
+
+    Most devices follow it with the serving cell, [2B MCC][1B MNC][2B LAC][3B
+    CellID], decoded when present. Alarm packets (0x16) put a one-byte LBS
+    length ahead of the cell block, hence `lbs_length_prefix`.
     """
     if len(content) < LOCATION_MIN_LEN:
         log.warning("Location content too short (%d bytes) for %s", len(content), device_id)
@@ -87,6 +127,10 @@ def decode_location(content: bytes, device_id: str) -> LocationEvent | None:
         )
         return None
 
+    cell_start = LOCATION_MIN_LEN + (1 if lbs_length_prefix else 0)
+    cell, _ = _decode_cell(content[cell_start:])
+    mcc, mnc, lac, cell_id = cell or (None, None, None, None)
+
     return LocationEvent(
         device_id=device_id,
         latitude=round(latitude, 6),
@@ -96,6 +140,38 @@ def decode_location(content: bytes, device_id: str) -> LocationEvent | None:
         gps_fixed=bool(flags & _BIT_GPS_FIXED),
         satellites=satellites,
         fixed_at=fixed_at,
+        mcc=mcc,
+        mnc=mnc,
+        lac=lac,
+        cell_id=cell_id,
+    )
+
+
+def decode_lbs(content: bytes, device_id: str) -> CellReport | None:
+    """
+    LBS-only payload (protocol 0x18), sent when the tracker has no GPS fix:
+      [6B date/time][2B MCC][1B MNC][2B LAC][3B CellID][1B signal][neighbour cells..]
+
+    Only the serving cell and its signal are decoded; the neighbour cells
+    that follow matter only to a triangulating geolocation service.
+    """
+    if len(content) < LBS_MIN_LEN:
+        log.warning("LBS content too short (%d bytes) for %s", len(content), device_id)
+        return None
+    cell, consumed = _decode_cell(content[6:])
+    if cell is None:
+        log.debug("LBS packet from %s carries no cell", device_id)
+        return None
+    mcc, mnc, lac, cell_id = cell
+    signal_at = 6 + consumed
+    return CellReport(
+        device_id=device_id,
+        mcc=mcc,
+        mnc=mnc,
+        lac=lac,
+        cell_id=cell_id,
+        signal=content[signal_at] if len(content) > signal_at else None,
+        reported_at=_decode_timestamp(content),
     )
 
 
