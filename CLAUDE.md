@@ -89,6 +89,13 @@ consistent across both writers is therefore computed by Postgres itself:
   `last_seen`/`fix_count`), follow the same pattern — a trigger, not a method
   each sink implementation has to remember to call.
 
+**Trip report rules live once, in `api/reports.py`.** `GET /stats/report`
+(distance, top speed, running time, halts of 10+ minutes per vehicle) is one
+window-function query in `PostgresLocationRepository.trip_report`, while the
+in-memory backend calls `summarize_device` directly. Change a rule in both,
+then run `tests/test_reports_postgres.py` with `TEST_PG_DSN` set: it feeds
+random trips to both and fails on any disagreement.
+
 **Auth: opaque bearer tokens, not JWT.** `POST /auth/login` returns a random
 token (`api/security.py`); the server stores its SHA-256 fingerprint and
 looks it up on every request (`api/deps.py: current_user`), re-checking

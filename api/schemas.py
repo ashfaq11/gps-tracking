@@ -363,6 +363,42 @@ class FixBucket(BaseModel):
     fixes: int
 
 
+class DeviceReport(BaseModel):
+    """One vehicle's trips over a report window -- see api/reports.py."""
+
+    device_id: str
+    distance_km: float = Field(description="Great-circle distance between consecutive fixes.")
+    max_speed_kmh: int | None = Field(default=None, description="Fastest reported speed.")
+    running_minutes: float = Field(
+        description="Time spent moving. Gaps over 10 minutes between fixes are not counted."
+    )
+    halt_count: int = Field(description="Stops of halt_threshold_minutes or longer.")
+    halt_minutes: float = Field(description="Total length of those halts.")
+    longest_halt_minutes: float
+    fix_count: int
+    first_fix_at: datetime | None = None
+    last_fix_at: datetime | None = None
+
+
+class ReportTotals(BaseModel):
+    """The same figures summed across every vehicle in the report."""
+
+    devices: int
+    distance_km: float
+    max_speed_kmh: int | None = None
+    running_minutes: float
+    halt_count: int
+    halt_minutes: float
+
+
+class TripReport(BaseModel):
+    since: datetime
+    until: datetime
+    halt_threshold_minutes: int
+    totals: ReportTotals
+    devices: list[DeviceReport] = Field(description="Vehicles that reported, longest distance first.")
+
+
 # --- dashboard accounts -----------------------------------------------------
 
 Role = Literal["admin", "user"]
