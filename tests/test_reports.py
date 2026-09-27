@@ -3,7 +3,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from api.reports import ReportFix, haversine_m, summarize_device
+from api.reports import ReportFix, haversine_m, plausible_top_speed, summarize_device
 
 try:
     from api.config import ApiConfig
@@ -42,6 +42,27 @@ class TestSummarizeDevice(unittest.TestCase):
     def test_max_speed_ignores_missing_speeds(self):
         trips = summarize_device([fix(0, None), fix(1, 55), fix(2, 30)])
         self.assertEqual(trips.max_speed_kmh, 55)
+
+    def test_top_speed_ignores_a_junk_reading_over_the_ceiling(self):
+        # GT06 speed is one byte; junk arrives as 240-255.
+        trips = summarize_device([fix(0, 60), fix(1, 240), fix(2, 238), fix(3, 62)])
+        self.assertEqual(trips.max_speed_kmh, 62)
+
+    def test_top_speed_ignores_readings_without_a_gps_lock(self):
+        fixes = [fix(0, 40), ReportFix(12.97, 77.59, 150, T0 + timedelta(minutes=1), False), fix(2, 45)]
+        self.assertEqual(plausible_top_speed(fixes), 45)
+
+    def test_top_speed_ignores_an_isolated_spike(self):
+        # 40 -> 170 -> 40 in consecutive fixes is a glitch, not a sprint.
+        self.assertEqual(plausible_top_speed([fix(0, 40), fix(1, 170), fix(2, 40)]), 40)
+
+    def test_top_speed_keeps_a_real_ramp_up(self):
+        # Each step is within 50 km/h of a neighbour, so 150 is believed.
+        self.assertEqual(plausible_top_speed([fix(0, 60), fix(1, 110), fix(2, 150), fix(3, 140)]), 150)
+
+    def test_a_spike_at_the_edge_is_judged_by_its_one_neighbour(self):
+        self.assertEqual(plausible_top_speed([fix(0, 190), fix(1, 30), fix(2, 35)]), 35)
+        self.assertEqual(plausible_top_speed([fix(0, 100)]), 100)
 
     def test_running_counts_gaps_after_a_moving_fix(self):
         # Moving 0->1 and 1->2 (2 min), stopped from 2 onwards.

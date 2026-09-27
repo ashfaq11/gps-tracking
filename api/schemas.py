@@ -368,7 +368,11 @@ class DeviceReport(BaseModel):
 
     device_id: str
     distance_km: float = Field(description="Great-circle distance between consecutive fixes.")
-    max_speed_kmh: int | None = Field(default=None, description="Fastest reported speed.")
+    max_speed_kmh: int | None = Field(
+        default=None,
+        description="Fastest plausible speed: readings without a GPS lock, over 200 km/h, "
+        "or spiking 50+ km/h above both neighbours are ignored.",
+    )
     running_minutes: float = Field(
         description="Time spent moving. Gaps over 10 minutes between fixes are not counted."
     )
