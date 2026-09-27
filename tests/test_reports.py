@@ -3,7 +3,13 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from api.reports import ReportFix, haversine_m, plausible_top_speed, summarize_device
+from api.reports import (
+    ReportFix,
+    fix_time,
+    haversine_m,
+    plausible_top_speed,
+    summarize_device,
+)
 
 try:
     from api.config import ApiConfig
@@ -104,6 +110,22 @@ class TestSummarizeDevice(unittest.TestCase):
         self.assertAlmostEqual(trips.halt_minutes, 11)
 
 
+class TestFixTime(unittest.TestCase):
+    def test_uses_the_trackers_clock(self):
+        arrived = T0 + timedelta(minutes=40)
+        self.assertEqual(fix_time(T0, arrived), T0)
+
+    def test_falls_back_to_arrival_without_a_tracker_time(self):
+        self.assertEqual(fix_time(None, T0), T0)
+
+    def test_ignores_a_clock_that_is_plainly_wrong(self):
+        # Ahead of arrival by more than 10 minutes, or a month behind it.
+        self.assertEqual(fix_time(T0 + timedelta(minutes=11), T0), T0)
+        self.assertEqual(fix_time(T0 - timedelta(days=31), T0), T0)
+        # Small drift either way is still the tracker's own time.
+        self.assertEqual(fix_time(T0 + timedelta(minutes=2), T0), T0 + timedelta(minutes=2))
+
+
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
 class TestReportEndpoint(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -150,6 +172,32 @@ class TestReportEndpoint(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["totals"]["devices"], 2)
         self.assertEqual(body["totals"]["max_speed_kmh"], 60)
         self.assertAlmostEqual(body["totals"]["distance_km"], dev1["distance_km"])
+
+    async def test_a_buffered_upload_is_timed_by_when_the_tracker_took_each_fix(self):
+        # A tracker out of coverage: 30 minutes of driving, then a 15-minute
+        # halt, all uploaded in one burst on reconnect -- by arrival time it
+        # all happened within a second.
+        start = datetime.now(timezone.utc) - timedelta(hours=1)
+        backlog = [(m, 40) for m in range(0, 31, 5)] + [(m, 0) for m in (31, 38, 46)]
+        for i, (minute, speed) in enumerate(backlog):
+            await self.client.post(
+                f"{BASE}/ingest/location",
+                json={
+                    "device_id": "dev3",
+                    "latitude": 12.9 + i * 0.01 if speed else 12.9 + 6 * 0.01,
+                    "longitude": 77.6,
+                    "speed_kmh": speed,
+                    "fixed_at": (start + timedelta(minutes=minute)).isoformat(),
+                },
+                headers={"X-API-Key": API_KEY},
+            )
+        body = (await self.client.get(f"{BASE}/stats/report", headers=self.admin)).json()
+        dev3 = next(d for d in body["devices"] if d["device_id"] == "dev3")
+        # Running: every gap after a moving fix, 30 min of drive plus the
+        # minute into the first stationary fix.
+        self.assertAlmostEqual(dev3["running_minutes"], 31, places=3)
+        self.assertEqual(dev3["halt_count"], 1)
+        self.assertAlmostEqual(dev3["halt_minutes"], 15, places=3)
 
     async def test_a_user_sees_only_their_own_vehicles(self):
         body = (await self.client.get(f"{BASE}/stats/report", headers=self.owner)).json()

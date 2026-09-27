@@ -6,8 +6,10 @@ trip_report SQL implements exactly the same ones in a single pass. The
 in-memory backend calls summarize_device directly, and the test suite checks
 the SQL against it, so the two cannot quietly disagree about what a halt is.
 
-Definitions, per device, over its fixes in the window ordered by
-(received_at, id), with a missing speed read as 0 like the dashboard does:
+Definitions, per device, over its fixes in the window ordered by (fix
+time, id), with a missing speed read as 0 like the dashboard does. A fix's
+time is when the tracker took it (`fixed_at`), not when it reached us --
+see `fix_time`:
 
 - distance: the sum of great-circle distances between consecutive fixes, the
   same haversine the dashboard's trackDistanceKm uses.
@@ -34,6 +36,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 HALT_THRESHOLD = timedelta(minutes=10)
+# fix_time's sanity bounds on the tracker's own clock -- the same ones
+# check_geofences() in sql/schema.sql applies to a crossing's time.
+CLOCK_AHEAD_LIMIT = timedelta(minutes=10)
+CLOCK_BEHIND_LIMIT = timedelta(days=30)
 MAX_RUNNING_GAP = timedelta(minutes=10)
 MAX_PLAUSIBLE_SPEED_KMH = 200
 SPIKE_KMH = 50
@@ -41,12 +47,31 @@ SPIKE_KMH = 50
 _EARTH_RADIUS_M = 6_371_000
 
 
+def fix_time(fixed_at: datetime | None, received_at: datetime) -> datetime:
+    """When a fix happened: the tracker's own clock, unless it is plainly
+    wrong (ahead of arrival, or a month behind), then when it arrived.
+
+    Arrival time alone is wrong whenever a tracker buffers. Out of coverage
+    a GT06 unit keeps fixing and uploads the backlog in one burst on
+    reconnect, so by arrival a 40-minute drive and a 12-minute halt all
+    "happen" within the same second: distance survives, but running time
+    and halts collapse to zero."""
+    if (
+        fixed_at is None
+        or fixed_at > received_at + CLOCK_AHEAD_LIMIT
+        or fixed_at < received_at - CLOCK_BEHIND_LIMIT
+    ):
+        return received_at
+    return fixed_at
+
+
 @dataclass(frozen=True)
 class ReportFix:
     latitude: float
     longitude: float
     speed_kmh: int | None
-    received_at: datetime
+    at: datetime
+    """The fix's time -- `fix_time(fixed_at, received_at)`."""
     gps_fixed: bool | None = None
 
 
@@ -73,7 +98,7 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 def plausible_top_speed(fixes: list[ReportFix]) -> int | None:
     """The fastest reading that survives the three rules in the module
-    docstring; None if none does. `fixes` in (received_at, id) order."""
+    docstring; None if none does. `fixes` in (at, id) order."""
     best: int | None = None
     for i, fix in enumerate(fixes):
         speed = fix.speed_kmh
@@ -92,7 +117,7 @@ def plausible_top_speed(fixes: list[ReportFix]) -> int | None:
 
 
 def summarize_device(fixes: list[ReportFix]) -> DeviceTrips:
-    """`fixes` must already be in (received_at, id) order."""
+    """`fixes` must already be in (at, id) order."""
     metres = 0.0
     running = timedelta()
     halts: list[timedelta] = []
@@ -110,13 +135,13 @@ def summarize_device(fixes: list[ReportFix]) -> DeviceTrips:
     for fix in fixes:
         if previous is not None:
             metres += haversine_m(previous.latitude, previous.longitude, fix.latitude, fix.longitude)
-            gap = fix.received_at - previous.received_at
+            gap = fix.at - previous.at
             if (previous.speed_kmh or 0) > 0 and gap <= MAX_RUNNING_GAP:
                 running += gap
         if (fix.speed_kmh or 0) == 0:
             if stop_len == 0:
-                stop_start = fix.received_at
-            stop_end = fix.received_at
+                stop_start = fix.at
+            stop_end = fix.at
             stop_len += 1
         else:
             close_stop()
@@ -132,6 +157,6 @@ def summarize_device(fixes: list[ReportFix]) -> DeviceTrips:
         halt_minutes=sum(h.total_seconds() for h in halts) / 60,
         longest_halt_minutes=max((h.total_seconds() for h in halts), default=0) / 60,
         fix_count=len(fixes),
-        first_fix_at=fixes[0].received_at if fixes else None,
-        last_fix_at=fixes[-1].received_at if fixes else None,
+        first_fix_at=fixes[0].at if fixes else None,
+        last_fix_at=fixes[-1].at if fixes else None,
     )

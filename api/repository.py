@@ -13,7 +13,10 @@ from .reports import (
     MAX_PLAUSIBLE_SPEED_KMH,
     MAX_RUNNING_GAP,
     SPIKE_KMH,
+    CLOCK_AHEAD_LIMIT,
+    CLOCK_BEHIND_LIMIT,
     ReportFix,
+    fix_time,
     summarize_device,
 )
 from .schemas import (
@@ -356,20 +359,21 @@ class InMemoryLocationRepository:
     async def trip_report(
         self, since: datetime, until: datetime, device_ids: frozenset[str] | None = None
     ) -> list[DeviceReport]:
-        by_device: dict[str, list[LocationOut]] = {}
+        by_device: dict[str, list[tuple[datetime, LocationOut]]] = {}
         for row in self._rows:
             if device_ids is not None and row.device_id not in device_ids:
                 continue
-            if not self._sub_active(row.device_id) or not since <= row.received_at <= until:
+            at = fix_time(row.fixed_at, row.received_at)
+            if not self._sub_active(row.device_id) or not since <= at <= until:
                 continue
-            by_device.setdefault(row.device_id, []).append(row)
+            by_device.setdefault(row.device_id, []).append((at, row))
         reports = []
         for device_id, rows in by_device.items():
-            rows.sort(key=lambda r: (r.received_at, r.id))
+            rows.sort(key=lambda pair: (pair[0], pair[1].id))
             trips = summarize_device(
                 [
-                    ReportFix(r.latitude, r.longitude, r.speed_kmh, r.received_at, r.gps_fixed)
-                    for r in rows
+                    ReportFix(r.latitude, r.longitude, r.speed_kmh, at, r.gps_fixed)
+                    for at, r in rows
                 ]
             )
             reports.append(DeviceReport(device_id=device_id, **vars(trips)))
@@ -722,26 +726,42 @@ class PostgresLocationRepository:
         # fixes numbers the stationary runs between them, so every run of
         # consecutive stopped fixes shares a `grp`. Same rules, one for one,
         # as api/reports.py's summarize_device -- tests compare the two.
+        #
+        # `at` is reports.fix_time: the tracker's clock unless it is plainly
+        # wrong. The received_at bounds in `base` are what that rule allows
+        # (a fix at most CLOCK_AHEAD_LIMIT ahead of arrival, at most
+        # CLOCK_BEHIND_LIMIT behind), so the (device_id, received_at) index
+        # still narrows the scan before `at` does the exact filtering.
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                WITH f AS (
-                    SELECT device_id, id, latitude, longitude, speed_kmh, received_at,
-                           gps_fixed,
-                           COALESCE(speed_kmh, 0)                     AS speed,
-                           LEAD(COALESCE(speed_kmh, 0)) OVER w        AS n_speed,
-                           LAG(latitude) OVER w                       AS p_lat,
-                           LAG(longitude) OVER w                      AS p_lon,
-                           LAG(received_at) OVER w                    AS p_at,
-                           LAG(COALESCE(speed_kmh, 0)) OVER w         AS p_speed
+                WITH base AS (
+                    SELECT device_id, id, latitude, longitude, speed_kmh, gps_fixed,
+                           CASE WHEN fixed_at IS NULL
+                                  OR fixed_at > received_at + $8::interval
+                                  OR fixed_at < received_at - $9::interval
+                                THEN received_at ELSE fixed_at
+                           END                                        AS at
                     FROM device_locations dl
-                    WHERE received_at >= $1 AND received_at <= $2
+                    WHERE received_at >= $1::timestamptz - $8::interval
+                      AND received_at <= $2::timestamptz + $9::interval
                       AND ($3::text[] IS NULL OR device_id = ANY($3::text[]))
                       AND NOT EXISTS (
                           SELECT 1 FROM device_subscriptions ds
                           WHERE ds.device_id = dl.device_id AND ds.subscription_end_date <= now()
                       )
-                    WINDOW w AS (PARTITION BY device_id ORDER BY received_at, id)
+                ),
+                f AS (
+                    SELECT device_id, id, latitude, longitude, speed_kmh, at, gps_fixed,
+                           COALESCE(speed_kmh, 0)                     AS speed,
+                           LEAD(COALESCE(speed_kmh, 0)) OVER w        AS n_speed,
+                           LAG(latitude) OVER w                       AS p_lat,
+                           LAG(longitude) OVER w                      AS p_lon,
+                           LAG(at) OVER w                             AS p_at,
+                           LAG(COALESCE(speed_kmh, 0)) OVER w         AS p_speed
+                    FROM base
+                    WHERE at >= $1 AND at <= $2
+                    WINDOW w AS (PARTITION BY device_id ORDER BY at, id)
                 ),
                 seg AS (
                     SELECT f.*,
@@ -752,20 +772,20 @@ class PostgresLocationRepository:
                                      * power(sin(radians(longitude - p_lon) / 2), 2)
                                )))
                            END                                        AS metres,
-                           CASE WHEN p_speed > 0 AND received_at - p_at <= $5
-                                THEN extract(epoch FROM received_at - p_at) ELSE 0
+                           CASE WHEN p_speed > 0 AND at - p_at <= $5
+                                THEN extract(epoch FROM at - p_at) ELSE 0
                            END                                        AS running_s,
                            count(*) FILTER (WHERE speed > 0) OVER (
-                               PARTITION BY device_id ORDER BY received_at, id
+                               PARTITION BY device_id ORDER BY at, id
                            )                                          AS grp
                     FROM f
                 ),
                 halts AS (
-                    SELECT device_id, extract(epoch FROM max(received_at) - min(received_at)) AS secs
+                    SELECT device_id, extract(epoch FROM max(at) - min(at)) AS secs
                     FROM seg
                     WHERE speed = 0
                     GROUP BY device_id, grp
-                    HAVING count(*) >= 2 AND max(received_at) - min(received_at) >= $4
+                    HAVING count(*) >= 2 AND max(at) - min(at) >= $4
                 ),
                 halt_totals AS (
                     SELECT device_id, count(*) AS n, sum(secs) AS secs, max(secs) AS longest
@@ -790,8 +810,8 @@ class PostgresLocationRepository:
                        COALESCE(max(h.secs), 0) / 60            AS halt_minutes,
                        COALESCE(max(h.longest), 0) / 60         AS longest_halt_minutes,
                        count(*)                                 AS fix_count,
-                       min(s.received_at)                       AS first_fix_at,
-                       max(s.received_at)                       AS last_fix_at
+                       min(s.at)                                AS first_fix_at,
+                       max(s.at)                                AS last_fix_at
                 FROM seg s
                 LEFT JOIN halt_totals h ON h.device_id = s.device_id
                 GROUP BY s.device_id
@@ -804,6 +824,8 @@ class PostgresLocationRepository:
                 MAX_RUNNING_GAP,
                 MAX_PLAUSIBLE_SPEED_KMH,
                 SPIKE_KMH,
+                CLOCK_AHEAD_LIMIT,
+                CLOCK_BEHIND_LIMIT,
             )
         return [
             DeviceReport(
