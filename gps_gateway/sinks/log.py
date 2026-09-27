@@ -3,7 +3,7 @@
 import logging
 from dataclasses import asdict
 
-from ..models import LocationEvent
+from ..models import LocationEvent, StatusEvent
 from .base import Sink
 
 log = logging.getLogger(__name__)
@@ -16,3 +16,6 @@ class LogSink(Sink):
     async def publish(self, event: LocationEvent) -> None:
         self.published += 1
         log.info("EVENT %s", asdict(event))
+
+    async def publish_status(self, status: StatusEvent) -> None:
+        log.info("STATUS %s", asdict(status))

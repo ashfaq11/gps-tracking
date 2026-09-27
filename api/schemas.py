@@ -33,6 +33,7 @@ class LocationIn(BaseModel):
                     "mnc": 45,
                     "lac": 4101,
                     "cell_id": 21635,
+                    "ignition": True,
                 }
             ]
         }
@@ -62,6 +63,11 @@ class LocationIn(BaseModel):
     cell_id: int | None = Field(
         default=None, ge=0, le=2**36 - 1, description="Cell id (GSM CI, LTE ECI or 5G NCI)."
     )
+    ignition: bool | None = Field(
+        default=None,
+        description="Ignition (ACC) at the time of this fix. Omit if unknown -- null is "
+        "never read as off.",
+    )
 
 
 class LocationOut(BaseModel):
@@ -83,6 +89,7 @@ class LocationOut(BaseModel):
                     "mnc": 45,
                     "lac": 4101,
                     "cell_id": 21635,
+                    "ignition": True,
                 }
             ]
         }
@@ -102,6 +109,7 @@ class LocationOut(BaseModel):
     mnc: int | None = None
     lac: int | None = None
     cell_id: int | None = None
+    ignition: bool | None = None
 
 
 # Plain "active"/"expired" rather than a bare boolean -- the pairing every
@@ -131,6 +139,8 @@ class DeviceOut(BaseModel):
                     "name": "Delivery Van 3",
                     "icon": "van",
                     "owner_username": "priya",
+                    "ignition": True,
+                    "ignition_changed_at": "2026-09-06T03:10:44Z",
                 }
             ]
         }
@@ -183,6 +193,15 @@ class DeviceOut(BaseModel):
         default=None,
         description="Who has claimed this device (see device_claims). Null means unclaimed -- "
         "onboard it via PATCH/POST on this user, or POST /devices/claim.",
+    )
+    ignition: bool | None = Field(
+        default=None,
+        description="Current ignition (ACC) state -- from the tracker's latest heartbeat or "
+        "any fix that reported it, whichever is newer. Null if it has never reported one.",
+    )
+    ignition_changed_at: datetime | None = Field(
+        default=None,
+        description="When ignition last switched on or off, e.g. to show 'parked since'.",
     )
 
 

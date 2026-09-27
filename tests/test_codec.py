@@ -1,7 +1,13 @@
 import unittest
 from datetime import datetime, timezone
 
-from gps_gateway.protocol import build_ack, decode_lbs, decode_location, decode_login
+from gps_gateway.protocol import (
+    build_ack,
+    decode_heartbeat,
+    decode_lbs,
+    decode_location,
+    decode_login,
+)
 
 # A real GT06 location payload (Shenzhen, 2015-12-29 02:51:05 UTC):
 #   0F 0C 1D 02 33 05  date/time
@@ -130,7 +136,7 @@ class TestDecodeCell(unittest.TestCase):
         self.assertEqual(event.cell_id, 8120)
 
     def test_alarm_packets_skip_the_lbs_length_byte(self):
-        content = SAMPLE_LOCATION + b"\x08" + SAMPLE_CELL + b"\x44\x06\x04\x00\x01"
+        content = SAMPLE_LOCATION + b"\x09" + SAMPLE_CELL + b"\x44\x06\x04\x00\x01"
         event = decode_location(content, "dev1", lbs_length_prefix=True)
         self.assertEqual((event.mcc, event.mnc, event.lac, event.cell_id), (460, 0, 10365, 8120))
 
@@ -150,6 +156,40 @@ class TestDecodeCell(unittest.TestCase):
         cell = bytes.fromhex("8194" "0356" "1005" "005483")
         event = decode_location(SAMPLE_LOCATION + cell, "dev1")
         self.assertEqual((event.mcc, event.mnc, event.lac, event.cell_id), (404, 854, 4101, 21635))
+
+
+class TestIgnition(unittest.TestCase):
+    def test_heartbeat_acc_bit_means_ignition_on(self):
+        status = decode_heartbeat(bytes.fromhex("4604040001"), "dev1")
+        self.assertEqual(status.device_id, "dev1")
+        self.assertTrue(status.ignition)
+
+    def test_heartbeat_without_the_acc_bit_is_off(self):
+        # 0x44: GPS tracking + charging, but bit 1 (ACC) clear.
+        self.assertFalse(decode_heartbeat(bytes.fromhex("4404040001"), "dev1").ignition)
+
+    def test_an_empty_heartbeat_says_nothing(self):
+        self.assertIsNone(decode_heartbeat(b"", "dev1"))
+
+    def test_alarm_reads_ignition_after_the_cell(self):
+        content = SAMPLE_LOCATION + b"\x09" + SAMPLE_CELL + b"\x46\x06\x04\x01\x01"
+        event = decode_location(content, "dev1", lbs_length_prefix=True)
+        self.assertTrue(event.ignition)
+        self.assertEqual(event.cell_id, 8120)
+
+    def test_alarm_without_a_cell_reads_ignition_right_after_the_length(self):
+        # LBS length 0: no cell, and the status byte must not be misread as one.
+        content = SAMPLE_LOCATION + b"\x00" + b"\x44\x06\x04\x01\x01"
+        event = decode_location(content, "dev1", lbs_length_prefix=True)
+        self.assertFalse(event.ignition)
+        self.assertIsNone(event.mcc)
+
+    def test_a_plain_location_does_not_report_ignition(self):
+        self.assertIsNone(decode_location(SAMPLE_LOCATION + SAMPLE_CELL, "dev1").ignition)
+
+    def test_an_alarm_cut_short_before_the_status_reports_none(self):
+        content = SAMPLE_LOCATION + b"\x09" + SAMPLE_CELL
+        self.assertIsNone(decode_location(content, "dev1", lbs_length_prefix=True).ignition)
 
 
 class TestDecodeLbs(unittest.TestCase):

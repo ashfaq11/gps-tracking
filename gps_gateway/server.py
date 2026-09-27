@@ -6,7 +6,7 @@ from typing import Optional
 
 from .config import Config
 from .logging_setup import configure_logging
-from .models import LocationEvent
+from .models import LocationEvent, StatusEvent
 from .protocol import (
     PROTO_ALARM,
     PROTO_HEARTBEAT,
@@ -14,6 +14,7 @@ from .protocol import (
     PROTO_LOCATION,
     PROTO_LOGIN,
     build_ack,
+    decode_heartbeat,
     decode_lbs,
     decode_location,
     decode_login,
@@ -141,6 +142,9 @@ class DeviceSession:
 
             elif frame.protocol == PROTO_HEARTBEAT:
                 log.debug("Heartbeat from %s", self.device_id)
+                status = decode_heartbeat(frame.content, self.device_id) if self.device_id else None
+                if status is not None:
+                    publishes.append(self._publish_status(status))
                 acks.append(frame)
 
             else:
@@ -162,6 +166,13 @@ class DeviceSession:
         except Exception:
             log.exception("Failed to publish event for %s", event.device_id)
 
+    async def _publish_status(self, status: StatusEvent) -> None:
+        try:
+            await self.sink.publish_status(status)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Failed to record ignition for %s", status.device_id)
 
 def _log_startup_banner(server: asyncio.AbstractServer, config: Config) -> None:
     """

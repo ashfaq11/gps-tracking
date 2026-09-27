@@ -4,7 +4,7 @@ import logging
 import struct
 from datetime import datetime, timezone
 
-from ..models import CellReport, LocationEvent
+from ..models import CellReport, LocationEvent, StatusEvent
 from .constants import START_SHORT, STOP_BITS
 from .crc import crc16_itu
 
@@ -29,6 +29,10 @@ _BIT_MNC_2_BYTES = 0x8000
 
 # LBS-only content: 6-byte timestamp, then the serving cell.
 LBS_MIN_LEN = 6 + _CELL_LEN
+
+# Terminal information byte, sent first in a heartbeat and after the cell in
+# an alarm. Bit 1 mirrors the ACC (ignition) wire.
+_BIT_ACC_ON = 0x02
 
 
 def bcd_to_int(byte_val: int) -> int:
@@ -89,6 +93,23 @@ def _decode_cell(data: bytes) -> tuple[tuple[int, int, int, int] | None, int]:
     return (mcc, mnc, lac, cell_id), consumed
 
 
+def _ignition(terminal_info: int) -> bool:
+    return bool(terminal_info & _BIT_ACC_ON)
+
+
+def decode_heartbeat(content: bytes, device_id: str) -> StatusEvent | None:
+    """
+    Heartbeat payload (protocol 0x13):
+      [1B terminal info][1B voltage level][1B GSM signal][2B alarm + language]
+
+    Only the terminal info byte matters here. An empty heartbeat (some
+    clones send one) says nothing about ignition, so it yields None.
+    """
+    if not content:
+        return None
+    return StatusEvent(device_id=device_id, ignition=_ignition(content[0]))
+
+
 def decode_location(
     content: bytes, device_id: str, *, lbs_length_prefix: bool = False
 ) -> LocationEvent | None:
@@ -97,8 +118,11 @@ def decode_location(
       [6B date/time][1B gps info + sat count][4B lat][4B lon][1B speed][2B course+flags]
 
     Most devices follow it with the serving cell, [2B MCC][1B MNC][2B LAC][3B
-    CellID], decoded when present. Alarm packets (0x16) put a one-byte LBS
-    length ahead of the cell block, hence `lbs_length_prefix`.
+    CellID], decoded when present.
+
+    Alarm packets (0x16) differ, hence `lbs_length_prefix`: a length byte
+    (counting itself, so 9 for a plain cell, 0 for none) precedes the cell,
+    and the terminal info byte -- which carries ignition -- follows it.
     """
     if len(content) < LOCATION_MIN_LEN:
         log.warning("Location content too short (%d bytes) for %s", len(content), device_id)
@@ -127,8 +151,16 @@ def decode_location(
         )
         return None
 
-    cell_start = LOCATION_MIN_LEN + (1 if lbs_length_prefix else 0)
-    cell, _ = _decode_cell(content[cell_start:])
+    cell, ignition = None, None
+    if not lbs_length_prefix:
+        cell, _ = _decode_cell(content[LOCATION_MIN_LEN:])
+    elif len(content) > LOCATION_MIN_LEN:
+        lbs_len = content[LOCATION_MIN_LEN]
+        if lbs_len:
+            cell, _ = _decode_cell(content[LOCATION_MIN_LEN + 1 : LOCATION_MIN_LEN + lbs_len])
+        status_at = LOCATION_MIN_LEN + max(lbs_len, 1)
+        if len(content) > status_at:
+            ignition = _ignition(content[status_at])
     mcc, mnc, lac, cell_id = cell or (None, None, None, None)
 
     return LocationEvent(
@@ -144,6 +176,7 @@ def decode_location(
         mnc=mnc,
         lac=lac,
         cell_id=cell_id,
+        ignition=ignition,
     )
 
 

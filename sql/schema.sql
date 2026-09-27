@@ -33,6 +33,13 @@ ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS mnc     SMALLINT;
 ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS lac     INT;
 ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS cell_id BIGINT;
 
+-- Ignition (ACC) as reported by the packet that produced this row -- GT06
+-- alarms carry it, plain location packets do not, HTTP clients may send it.
+-- NULL means "not reported", never "off". The device's *current* ignition,
+-- which mostly arrives in heartbeats with no position at all, is
+-- device_status below.
+ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS ignition BOOLEAN;
+
 -- The dashboard query is "latest fixes for this device", newest first.
 CREATE INDEX IF NOT EXISTS device_locations_device_time_idx
     ON device_locations (device_id, received_at DESC);
@@ -398,7 +405,8 @@ BEGIN
         'mcc', NEW.mcc,
         'mnc', NEW.mnc,
         'lac', NEW.lac,
-        'cell_id', NEW.cell_id
+        'cell_id', NEW.cell_id,
+        'ignition', NEW.ignition
     )::text);
     RETURN NEW;
 END;
@@ -408,6 +416,81 @@ DROP TRIGGER IF EXISTS device_locations_notify_fix ON device_locations;
 CREATE TRIGGER device_locations_notify_fix
     AFTER INSERT ON device_locations
     FOR EACH ROW EXECUTE FUNCTION notify_new_fix();
+
+
+-- ---------------------------------------------------------------------------
+-- Ignition.
+--
+-- A GT06 reports ignition in its heartbeat, which has no position, and a
+-- parked vehicle often sends nothing *but* heartbeats -- so "ignition off"
+-- cannot wait for the next device_locations row. device_status holds each
+-- device's current state; record_ignition() is its only writer, called by
+-- the gateway for every heartbeat and by the trigger below for any position
+-- row that carries ignition (GT06 alarms, HTTP ingest). One function, so
+-- both writers agree on what counts as a change.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS device_status (
+    device_id           TEXT PRIMARY KEY,
+    ignition            BOOLEAN     NOT NULL,
+    -- When ignition last flipped; the first report counts as a flip.
+    ignition_changed_at TIMESTAMPTZ NOT NULL,
+    -- When the newest report was received, whatever it said.
+    reported_at         TIMESTAMPTZ NOT NULL
+);
+
+CREATE OR REPLACE FUNCTION record_ignition(
+    p_device_id TEXT, p_ignition BOOLEAN, p_at TIMESTAMPTZ
+) RETURNS void AS $$
+    INSERT INTO device_status AS s (device_id, ignition, ignition_changed_at, reported_at)
+    VALUES (p_device_id, p_ignition, p_at, p_at)
+    ON CONFLICT (device_id) DO UPDATE SET
+        ignition = EXCLUDED.ignition,
+        ignition_changed_at = CASE
+            WHEN s.ignition IS DISTINCT FROM EXCLUDED.ignition THEN EXCLUDED.reported_at
+            ELSE s.ignition_changed_at
+        END,
+        reported_at = EXCLUDED.reported_at
+    -- The gateway batches position rows but writes heartbeats at once, so an
+    -- alarm row can land after a newer heartbeat. Older news never wins.
+    WHERE EXCLUDED.reported_at >= s.reported_at;
+-- SECURITY DEFINER for the same reason as check_geofences below: every
+-- writer must be able to record ignition without its own grant on the table.
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
+
+CREATE OR REPLACE FUNCTION record_row_ignition() RETURNS trigger AS $$
+BEGIN
+    PERFORM record_ignition(NEW.device_id, NEW.ignition, NEW.received_at);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS device_locations_record_ignition ON device_locations;
+CREATE TRIGGER device_locations_record_ignition
+    AFTER INSERT ON device_locations
+    FOR EACH ROW WHEN (NEW.ignition IS NOT NULL)
+    EXECUTE FUNCTION record_row_ignition();
+
+-- The API reads device_status (the device list shows ignition). Same
+-- ownership problem, and same fix, as the geofence grants at the end.
+DO $grant_device_status$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT DISTINCT who FROM (
+            SELECT c.relowner::regrole::text AS who
+            FROM pg_class c WHERE c.relname = 'device_locations'
+            UNION
+            SELECT a.grantee::regrole::text
+            FROM pg_class c, aclexplode(c.relacl) a
+            WHERE c.relname = 'device_locations' AND a.privilege_type = 'INSERT' AND a.grantee <> 0
+        ) AS writers
+    LOOP
+        EXECUTE format('GRANT SELECT ON device_status TO %s', r.who);
+    END LOOP;
+END
+$grant_device_status$;
 
 
 -- ---------------------------------------------------------------------------

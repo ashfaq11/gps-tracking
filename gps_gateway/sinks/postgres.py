@@ -10,7 +10,7 @@ in version control instead of happening implicitly on process start.
 import asyncio
 import logging
 
-from ..models import LocationEvent
+from ..models import LocationEvent, StatusEvent
 from .base import Sink
 
 log = logging.getLogger(__name__)
@@ -29,12 +29,17 @@ _COLUMNS = (
     "mnc",
     "lac",
     "cell_id",
+    "ignition",
 )
 
 _INSERT = f"""
 INSERT INTO device_locations ({", ".join(_COLUMNS)})
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 """
+
+# All ignition bookkeeping (did it change, is this report stale) lives in
+# the database, shared with the trigger that handles alarm rows.
+_RECORD_IGNITION = "SELECT record_ignition($1, $2, $3)"
 
 # SQLSTATE classes meaning "Postgres rejected this data" -- 22 data
 # exception, 23 integrity violation -- as opposed to "Postgres is unreachable
@@ -73,6 +78,7 @@ def _record(event: LocationEvent) -> tuple:
         event.mnc,
         event.lac,
         event.cell_id,
+        event.ignition,
     )
 
 
@@ -100,12 +106,16 @@ class PostgresSink(Sink):
             statement_cache_size=self._statement_cache_size,
         )
         async with self._pool.acquire() as conn:
-            exists = await conn.fetchval("SELECT to_regclass('public.device_locations')")
-        if exists is None:
+            exists = await conn.fetchval(
+                "SELECT to_regclass('public.device_locations') IS NOT NULL"
+                " AND to_regprocedure('record_ignition(text, boolean, timestamptz)') IS NOT NULL"
+            )
+        if not exists:
             await self._pool.close()
             self._pool = None
             raise SchemaMissingError(
-                "Table 'device_locations' is missing. Create it first:\n"
+                "Table 'device_locations' or function 'record_ignition' is missing. "
+                "Apply the schema first:\n"
                 "    psql \"$PG_DSN\" -f sql/schema.sql"
             )
         log.info("Postgres pool ready")
@@ -118,6 +128,12 @@ class PostgresSink(Sink):
     async def publish(self, event: LocationEvent) -> None:
         async with self._require_pool().acquire() as conn:
             await conn.execute(_INSERT, *_record(event))
+
+    async def publish_status(self, status: StatusEvent) -> None:
+        async with self._require_pool().acquire() as conn:
+            await conn.execute(
+                _RECORD_IGNITION, status.device_id, status.ignition, status.received_at
+            )
 
     async def publish_many(self, events: list[LocationEvent]) -> list[BaseException | None]:
         """

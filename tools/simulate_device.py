@@ -29,6 +29,8 @@ FLAGS_N_E_FIXED = 0x1400
 _COORD_SCALE = 30000.0 * 60.0
 # MCC 404 (India), MNC 45, LAC 0x1005, CellID 0x005483.
 SERVING_CELL = bytes.fromhex("0194" "2D" "1005" "005483")
+# Terminal info 0x46 (GPS tracking, charging, ACC on), voltage 4, GSM 4.
+HEARTBEAT_ACC_ON = bytes.fromhex("46" "04" "04" "0001")
 
 
 def location_content(lat: float, lon: float, speed_kmh: int, course_deg: int) -> bytes:
@@ -83,7 +85,7 @@ async def simulate(host: str, port: int, imei: str, pings: int, interval: float)
 
             if i % 2 == 1:
                 serial += 1
-                writer.write(build_frame(PROTO_HEARTBEAT, serial, b"\x04\x00\x01\x00\x01"))
+                writer.write(build_frame(PROTO_HEARTBEAT, serial, HEARTBEAT_ACC_ON))
                 await writer.drain()
                 print("Sent heartbeat")
                 await read_ack(reader, "heartbeat")

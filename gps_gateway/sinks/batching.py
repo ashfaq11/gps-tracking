@@ -27,7 +27,7 @@ same device.
 import asyncio
 import logging
 
-from ..models import LocationEvent
+from ..models import LocationEvent, StatusEvent
 from .base import Sink
 
 log = logging.getLogger(__name__)
@@ -78,6 +78,12 @@ class BatchingSink(Sink):
         # reading its socket, so a stalled database pushes back on the
         # devices over TCP instead of growing memory without bound.
         await self._queue.put(event)
+
+    async def publish_status(self, status: StatusEvent) -> None:
+        # Straight through, not queued: a heartbeat every few minutes is no
+        # load, and record_ignition's timestamp guard already copes with an
+        # alarm row from the queue landing after a newer heartbeat.
+        await self._inner.publish_status(status)
 
     async def stop(self) -> None:
         if self._flusher is not None:

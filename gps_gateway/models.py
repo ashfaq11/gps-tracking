@@ -30,6 +30,22 @@ class LocationEvent:
     mnc: int | None = None
     lac: int | None = None
     cell_id: int | None = None
+    # ACC line as reported by this very packet (alarms carry it); None when
+    # the packet has no status byte. Plain location packets never do -- the
+    # current state lives in device_status, fed mostly by heartbeats.
+    ignition: bool | None = None
+
+
+@dataclass
+class StatusEvent:
+    """
+    A heartbeat's terminal status. No position, so it never becomes a
+    device_locations row; it only moves the device's current ignition state.
+    """
+
+    device_id: str
+    ignition: bool
+    received_at: datetime = field(default_factory=_utcnow)
 
 
 @dataclass

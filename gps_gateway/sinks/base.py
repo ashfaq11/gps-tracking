@@ -2,7 +2,7 @@
 
 import asyncio
 
-from ..models import LocationEvent
+from ..models import LocationEvent, StatusEvent
 
 
 class Sink:
@@ -32,6 +32,12 @@ class Sink:
             else:
                 results.append(None)
         return results
+
+    async def publish_status(self, status: StatusEvent) -> None:
+        """
+        Record a heartbeat's ignition state. A no-op by default: a sink that
+        only knows about positions loses nothing a position row needs.
+        """
 
     async def stop(self) -> None:
         pass

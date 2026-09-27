@@ -126,6 +126,35 @@ class TestIngestValidation(ApiTestCase):
         self.assertEqual({k: with_cell[k] for k in cell}, cell)
         self.assertEqual({k: without[k] for k in cell}, dict.fromkeys(cell))
 
+    async def test_ignition_is_stored_per_fix_and_as_current_state(self):
+        await self.ingest({**FIX, "ignition": True})
+        first = (await self.client.get(f"{BASE}/devices", headers=self.auth())).json()[0]
+        self.assertTrue(first["ignition"])
+        changed_at = first["ignition_changed_at"]
+        self.assertIsNotNone(changed_at)
+
+        # Unknown (omitted) is not "off": current state and its time stay put.
+        await self.ingest(FIX)
+        latest = (
+            await self.client.get(f"{BASE}/devices/{FIX['device_id']}/latest", headers=self.auth())
+        ).json()
+        self.assertIsNone(latest["ignition"])
+        # A repeat of the same state is not a change either.
+        await self.ingest({**FIX, "ignition": True})
+        device = (await self.client.get(f"{BASE}/devices", headers=self.auth())).json()[0]
+        self.assertEqual((device["ignition"], device["ignition_changed_at"]), (True, changed_at))
+
+        await self.ingest({**FIX, "ignition": False})
+        device = (await self.client.get(f"{BASE}/devices", headers=self.auth())).json()[0]
+        self.assertFalse(device["ignition"])
+        self.assertGreater(device["ignition_changed_at"], changed_at)
+
+    async def test_ignition_is_null_for_a_device_that_never_reported_it(self):
+        await self.ingest()
+        device = (await self.client.get(f"{BASE}/devices", headers=self.auth())).json()[0]
+        self.assertIsNone(device["ignition"])
+        self.assertIsNone(device["ignition_changed_at"])
+
     async def test_rejects_an_out_of_range_mcc(self):
         response = await self.ingest({**FIX, "mcc": 1000})
         self.assertEqual(response.status_code, 422)
@@ -840,6 +869,8 @@ class TestAdminOnboarding(ApiTestCase):
                     "icon": "car",
                     "halted_since": None,
                     "owner_username": "dispatcher",
+                    "ignition": None,
+                    "ignition_changed_at": None,
                 }
             ],
         )

@@ -79,6 +79,12 @@ consistent across both writers is therefore computed by Postgres itself:
 - `notify_vehicle_motion()` (a trigger in `sql/schema.sql`) detects a
   device crossing from stopped to moving or back, and fires `pg_notify`.
   Neither writer knows this happens.
+- `record_ignition()` is the only writer of `device_status` (current
+  ignition + `ignition_changed_at`). The gateway calls it per heartbeat —
+  heartbeats have no position, so no row — and a trigger calls it for any
+  `device_locations` row whose `ignition` is non-null (GT06 alarms, HTTP
+  ingest). Its `reported_at` guard makes a late batched row lose to a newer
+  heartbeat.
 - If you add another cross-writer concern (e.g. a devices registry with
   `last_seen`/`fix_count`), follow the same pattern — a trigger, not a method
   each sink implementation has to remember to call.
