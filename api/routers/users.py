@@ -8,7 +8,7 @@ user.
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Security, status
+from fastapi import APIRouter, Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 from ..config import ApiConfig
