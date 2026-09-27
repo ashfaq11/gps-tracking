@@ -614,9 +614,43 @@ BEGIN
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+-- SECURITY DEFINER: this runs inside every position insert, from the API and
+-- the gateway alike, and those may connect as database users that were never
+-- given the geofence tables -- without it, one missing GRANT would make every
+-- position from that writer fail to save. It runs as whoever applied this
+-- file instead; the pinned search_path is what makes that safe.
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 DROP TRIGGER IF EXISTS device_locations_check_geofences ON device_locations;
 CREATE TRIGGER device_locations_check_geofences
     AFTER INSERT ON device_locations
     FOR EACH ROW EXECUTE FUNCTION check_geofences();
+
+-- The API reads and writes the geofence tables directly, and this file is
+-- often applied as a superuser (`sudo -u postgres psql -f ...`), which leaves
+-- the new tables owned by that superuser and unreadable to the API's own
+-- user. So: whoever may already save positions (the API's and the gateway's
+-- users -- device_locations' owner and anyone granted INSERT on it) gets the
+-- geofence tables too. Re-running this is harmless.
+DO $grant_geofences$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT DISTINCT who FROM (
+            SELECT c.relowner::regrole::text AS who
+            FROM pg_class c WHERE c.relname = 'device_locations'
+            UNION
+            SELECT a.grantee::regrole::text
+            FROM pg_class c, aclexplode(c.relacl) a
+            WHERE c.relname = 'device_locations' AND a.privilege_type = 'INSERT' AND a.grantee <> 0
+        ) AS writers
+    LOOP
+        EXECUTE format(
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON geofences, geofence_devices, '
+            'geofence_device_state, geofence_events TO %s', r.who);
+        EXECUTE format(
+            'GRANT USAGE, SELECT ON SEQUENCE geofences_id_seq, geofence_events_id_seq TO %s', r.who);
+    END LOOP;
+END
+$grant_geofences$;
