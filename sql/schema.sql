@@ -858,3 +858,116 @@ BEGIN
     END LOOP;
 END
 $grant_device_commands$;
+
+
+-- ---------------------------------------------------------------------------
+-- Tracker allowlist: which IMEIs the gateway accepts at login.
+--
+-- GT06 has no authentication -- a tracker is whatever IMEI it announces --
+-- so this cannot stop someone who knows one of *these* IMEIs. What it does
+-- stop is every IMEI nobody approved: scanners, garbage, guessed ids, and
+-- anything that would otherwise write rows or receive commands.
+--
+-- - Created and seeded once, with every device that already reported or is
+--   owned, so turning this on breaks nothing. Seeding only on creation means
+--   re-running this file never re-adds a device an admin removed.
+-- - A device someone owns is allowed: the trigger on user_devices covers a
+--   customer's self-claim and an admin's assignment alike.
+-- - An unknown IMEI's login is refused and counted in device_login_attempts,
+--   where an admin can approve it (which clears the attempt).
+
+DO $device_allowlist$
+BEGIN
+    IF to_regclass('device_allowlist') IS NULL THEN
+        CREATE TABLE device_allowlist (
+            device_id TEXT        PRIMARY KEY,
+            added_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            added_by  BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+            -- 'existing': seeded when the allowlist was created; 'owner':
+            -- someone claimed or was assigned it; 'admin': approved by hand.
+            source    TEXT        NOT NULL DEFAULT 'admin'
+                      CHECK (source IN ('existing', 'owner', 'admin'))
+        );
+        INSERT INTO device_allowlist (device_id, source)
+        SELECT device_id, 'existing' FROM (
+            SELECT DISTINCT device_id FROM device_locations
+            UNION
+            SELECT device_id FROM user_devices
+        ) known
+        ON CONFLICT DO NOTHING;
+    END IF;
+END
+$device_allowlist$;
+
+CREATE TABLE IF NOT EXISTS device_login_attempts (
+    device_id  TEXT        PRIMARY KEY,
+    first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempts   INTEGER     NOT NULL DEFAULT 1,
+    -- Where the newest attempt came from (ip:port), for telling a real
+    -- tracker on a mobile network from a scanner in a data centre.
+    last_peer  TEXT
+);
+
+CREATE OR REPLACE FUNCTION allow_owned_device() RETURNS trigger AS $$
+BEGIN
+    INSERT INTO device_allowlist (device_id, source)
+    VALUES (NEW.device_id, 'owner')
+    ON CONFLICT DO NOTHING;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS user_devices_allow ON user_devices;
+CREATE TRIGGER user_devices_allow
+    AFTER INSERT ON user_devices
+    FOR EACH ROW EXECUTE FUNCTION allow_owned_device();
+
+CREATE OR REPLACE FUNCTION clear_login_attempts() RETURNS trigger AS $$
+BEGIN
+    DELETE FROM device_login_attempts WHERE device_id = NEW.device_id;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS device_allowlist_clear_attempts ON device_allowlist;
+CREATE TRIGGER device_allowlist_clear_attempts
+    AFTER INSERT ON device_allowlist
+    FOR EACH ROW EXECUTE FUNCTION clear_login_attempts();
+
+-- The gateway's one call at login: true if allowed, otherwise the attempt
+-- is counted and false returned.
+CREATE OR REPLACE FUNCTION gateway_admit(p_device_id TEXT, p_peer TEXT)
+RETURNS BOOLEAN AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM device_allowlist WHERE device_id = p_device_id) THEN
+        RETURN true;
+    END IF;
+    INSERT INTO device_login_attempts AS a (device_id, last_peer)
+    VALUES (p_device_id, p_peer)
+    ON CONFLICT (device_id) DO UPDATE
+    SET last_seen = now(), attempts = a.attempts + 1, last_peer = EXCLUDED.last_peer;
+    RETURN false;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $grant_allowlist$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT DISTINCT who FROM (
+            SELECT c.relowner::regrole::text AS who
+            FROM pg_class c WHERE c.relname = 'device_locations'
+            UNION
+            SELECT a.grantee::regrole::text
+            FROM pg_class c, aclexplode(c.relacl) a
+            WHERE c.relname = 'device_locations' AND a.privilege_type = 'INSERT' AND a.grantee <> 0
+        ) AS writers
+    LOOP
+        EXECUTE format(
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON device_allowlist, device_login_attempts TO %s',
+            r.who);
+    END LOOP;
+END
+$grant_allowlist$;

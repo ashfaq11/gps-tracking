@@ -43,6 +43,10 @@ class Config:
     # restore) before recording it as failed with 'no_reply'. A late answer
     # still overrides that.
     command_reply_timeout_s: float = 60.0
+    # Tracker allowlist (see gps_gateway/admission.py): "enforce" refuses
+    # IMEIs nobody approved, "log" admits them but records them for review,
+    # "off" skips the check. The log sink has no database, so it is always off.
+    allowlist: str = "enforce"
 
     @classmethod
     def from_env(cls, env=None) -> "Config":
@@ -69,4 +73,5 @@ class Config:
             command_reply_timeout_s=float(
                 env.get("GATEWAY_COMMAND_REPLY_TIMEOUT", cls.command_reply_timeout_s)
             ),
+            allowlist=env.get("GATEWAY_ALLOWLIST", cls.allowlist).strip().lower(),
         )

@@ -4,6 +4,8 @@ import asyncio
 import logging
 from typing import Optional
 
+from .admission import MODES as ALLOWLIST_MODES
+from .admission import Admission, PostgresAdmission
 from .commands import (
     CommandQueue,
     Deliverable,
@@ -52,10 +54,15 @@ class DeviceSession(Deliverable):
         config: Config,
         commands: CommandQueue | None = None,
         registry: SessionRegistry | None = None,
+        admission: Admission | None = None,
     ):
         self.sink = sink
         self.config = config
         self.commands = commands or CommandQueue()
+        self.admission = admission or Admission()
+        # Set when the allowlist refused this tracker's login: the
+        # connection is closed after the current read.
+        self.refused = False
         self.registry = registry
         self.device_id: Optional[str] = None
         self.decoder = FrameDecoder(max_buffer_bytes=config.max_buffer_bytes)
@@ -87,6 +94,8 @@ class DeviceSession(Deliverable):
                 frames = self.decoder.feed(chunk)
                 if frames:
                     await self._process_frames(frames, writer)
+                if self.refused:
+                    break
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError) as exc:
             log.info("Connection dropped (%s) for device=%s", exc, self.device_id)
         except asyncio.CancelledError:
@@ -136,6 +145,14 @@ class DeviceSession(Deliverable):
                 device_id = decode_login(frame.content)
                 if device_id is None:
                     log.warning("Rejecting unreadable login packet")
+                    continue
+                peer = writer.get_extra_info("peername")
+                peer_text = f"{peer[0]}:{peer[1]}" if isinstance(peer, tuple) else str(peer)
+                if not await self.admission.admit(device_id, peer_text):
+                    # No ACK: the tracker never counts as connected, and the
+                    # connection closes once this read is done.
+                    log.warning("Refused login from unknown device %s (%s)", device_id, peer_text)
+                    self.refused = True
                     continue
                 if self.registry is not None and self.device_id and self.device_id != device_id:
                     self.registry.remove(self.device_id, self)
@@ -305,6 +322,21 @@ class DeviceSession(Deliverable):
         except Exception:
             log.exception("Failed to record ignition for %s", status.device_id)
 
+def build_admission(config: Config, commands: CommandQueue) -> Admission:
+    """The allowlist check; needs the database, so only with the Postgres
+    command queue (whose small control pool it shares)."""
+    if config.allowlist not in ALLOWLIST_MODES:
+        raise ValueError(
+            f"Unknown GATEWAY_ALLOWLIST {config.allowlist!r}; expected one of {ALLOWLIST_MODES}"
+        )
+    pool = getattr(commands, "pool", None)
+    if config.allowlist == "off" or pool is None:
+        if config.allowlist != "off":
+            log.warning("Tracker allowlist is off: no database with sink=%s", config.sink)
+        return Admission()
+    return PostgresAdmission(lambda: commands.pool, config.allowlist)
+
+
 def _log_startup_banner(server: asyncio.AbstractServer, config: Config) -> None:
     """
     Report the addresses devices should be pointed at.
@@ -321,8 +353,9 @@ def _log_startup_banner(server: asyncio.AbstractServer, config: Config) -> None:
         if host in ("0.0.0.0", "::"):
             log.info("  LOCAL   tcp://127.0.0.1:%s", port)
     log.info("-" * 72)
-    log.info("  sink=%s  idle_timeout=%ss  max_buffer=%sB",
-             config.sink, config.idle_timeout_s, config.max_buffer_bytes)
+    log.info("  sink=%s  idle_timeout=%ss  max_buffer=%sB  allowlist=%s",
+             config.sink, config.idle_timeout_s, config.max_buffer_bytes,
+             config.allowlist if config.sink == "postgres" else "off")
     if config.sink == "postgres":
         log.info("  batch_size=%s  flush_interval=%ss  queue_max=%s",
                  config.batch_size, config.flush_interval_s, config.queue_max)
@@ -344,9 +377,10 @@ async def serve(
     registry = SessionRegistry()
     await sink.start()
     await commands.start(registry.notify, registry.notify_all)
+    admission = build_admission(config, commands)
 
     async def client_connected(reader, writer):
-        await DeviceSession(sink, config, commands, registry).handle(reader, writer)
+        await DeviceSession(sink, config, commands, registry, admission).handle(reader, writer)
 
     server = await asyncio.start_server(client_connected, config.host, config.port)
     _log_startup_banner(server, config)

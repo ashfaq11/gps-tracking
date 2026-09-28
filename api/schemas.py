@@ -909,3 +909,40 @@ class DeviceCommandOut(BaseModel):
     error: str | None = Field(
         default=None, description="Why it did not go through, e.g. `ignition_on`, `no_reply`."
     )
+
+
+# --- tracker allowlist (admin) ---
+
+TrackerSource = Literal["existing", "owner", "admin"]
+
+
+class AllowTrackerIn(BaseModel):
+    device_id: str = Field(
+        pattern=r"^\d{8,20}$",
+        description="The tracker's IMEI, as it logs in (digits only).",
+        examples=["868120303372449"],
+    )
+
+
+class AllowedTrackerOut(BaseModel):
+    """A tracker the gateway accepts at login."""
+
+    device_id: str
+    added_at: datetime
+    added_by: str | None = Field(default=None, description="Username of the admin who added it.")
+    source: TrackerSource = Field(
+        description=(
+            "existing: already reporting when the allowlist was switched on; owner: allowed "
+            "because someone claimed or was assigned it; admin: approved by hand."
+        )
+    )
+
+
+class LoginAttemptOut(BaseModel):
+    """A tracker the gateway refused because nobody approved its IMEI."""
+
+    device_id: str
+    first_seen: datetime
+    last_seen: datetime
+    attempts: int
+    last_peer: str | None = Field(default=None, description="ip:port of the newest attempt.")
