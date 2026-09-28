@@ -946,3 +946,22 @@ class LoginAttemptOut(BaseModel):
     last_seen: datetime
     attempts: int
     last_peer: str | None = Field(default=None, description="ip:port of the newest attempt.")
+
+
+class RelayEnabledIn(BaseModel):
+    enabled: bool = Field(description="Switch engine cut-off on or off for this device.")
+
+
+class RelayStateOut(BaseModel):
+    """A device's engine cut-off: whether it is switched on, and recent commands."""
+
+    device_id: str
+    enabled: bool = Field(
+        description=(
+            "Whether an admin switched engine cut-off on for this device (off by default). "
+            "Only a cut needs it; restore is always allowed."
+        )
+    )
+    changed_at: datetime | None = None
+    changed_by: str | None = Field(default=None, description="Username of who last switched it.")
+    commands: list[DeviceCommandOut] = Field(default_factory=list, description="Newest first.")

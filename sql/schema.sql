@@ -764,6 +764,8 @@ $grant_geofences$;
 -- Safety lives here, not in either process, because it has to hold at the
 -- moment of delivery -- a command can wait in the queue while the tracker is
 -- offline, and the ignition can come on meanwhile:
+-- - a cut is only ever delivered to a device an admin switched cut-off on
+--   for (device_relay; off by default), otherwise it fails 'relay_disabled'
 -- - a cut is only ever delivered while device_status says ignition is off
 --   (unknown counts as not off); otherwise it fails with 'ignition_on'
 -- - an undelivered command expires at expires_at, so a tracker coming back
@@ -806,6 +808,17 @@ CREATE TRIGGER device_commands_notify
     AFTER INSERT ON device_commands
     FOR EACH ROW EXECUTE FUNCTION notify_device_command();
 
+-- Whether engine cut-off is switched on for a device -- an admin's choice,
+-- per device, off until switched on (no row = off). Only a cut needs it:
+-- restoring fuel is always allowed, or switching it off right after a cut
+-- would leave the vehicle stranded.
+CREATE TABLE IF NOT EXISTS device_relay (
+    device_id  TEXT        PRIMARY KEY,
+    enabled    BOOLEAN     NOT NULL DEFAULT false,
+    changed_by BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- The gateway's one entry point: settle what can no longer be sent, then
 -- hand over (and mark sent) what can, oldest first. SKIP LOCKED so two
 -- gateway processes never both take the same command.
@@ -815,6 +828,14 @@ BEGIN
     UPDATE device_commands
     SET status = 'expired', completed_at = now()
     WHERE device_id = p_device_id AND status = 'queued' AND expires_at <= now();
+
+    UPDATE device_commands
+    SET status = 'failed', error = 'relay_disabled', completed_at = now()
+    WHERE device_id = p_device_id AND status = 'queued' AND action = 'cut'
+      AND NOT EXISTS (
+          SELECT 1 FROM device_relay r
+          WHERE r.device_id = p_device_id AND r.enabled
+      );
 
     UPDATE device_commands
     SET status = 'failed', error = 'ignition_on', completed_at = now()
@@ -854,6 +875,7 @@ BEGIN
         ) AS writers
     LOOP
         EXECUTE format('GRANT SELECT, INSERT, UPDATE ON device_commands TO %s', r.who);
+        EXECUTE format('GRANT SELECT, INSERT, UPDATE ON device_relay TO %s', r.who);
         EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE device_commands_id_seq TO %s', r.who);
     END LOOP;
 END

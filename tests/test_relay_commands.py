@@ -46,6 +46,13 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(response.status_code, 202)
 
+    async def enable(self, device_id: str, enabled: bool = True, headers=None):
+        return await self.client.put(
+            f"{BASE}/devices/{device_id}/relay/enabled",
+            json={"enabled": enabled},
+            headers=self.admin if headers is None else headers,
+        )
+
     async def relay(self, device_id: str, action: str, headers=None):
         return await self.client.post(
             f"{BASE}/devices/{device_id}/relay",
@@ -55,6 +62,7 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
 
     async def test_cut_is_queued_while_the_ignition_is_off(self):
         await self.report("dev1", ignition=False)
+        await self.enable("dev1")
         response = await self.relay("dev1", "cut")
         self.assertEqual(response.status_code, 202)
         body = response.json()
@@ -65,6 +73,7 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
 
     async def test_cut_is_refused_while_the_ignition_is_on(self):
         await self.report("dev1", ignition=True)
+        await self.enable("dev1")
         response = await self.relay("dev1", "cut")
         self.assertEqual(response.status_code, 409)
         self.assertIn("ignition is off", response.json()["detail"])
@@ -73,6 +82,7 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
 
     async def test_cut_is_refused_when_the_ignition_was_never_reported(self):
         await self.report("dev1", ignition=None)
+        await self.enable("dev1")
         response = await self.relay("dev1", "cut")
         self.assertEqual(response.status_code, 409)
         self.assertIn("not reported its ignition", response.json()["detail"])
@@ -85,6 +95,7 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
 
     async def test_only_an_admin_may_send_commands(self):
         await self.report("dev1", ignition=False)
+        await self.enable("dev1")
         await self.client.post(
             f"{BASE}/users",
             json={"username": "owner", "password": "owner1234", "role": "user", "devices": ["dev1"]},
@@ -101,6 +112,7 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_newer_command_supersedes_one_still_queued(self):
         await self.report("dev1", ignition=False)
+        await self.enable("dev1")
         await self.relay("dev1", "cut")
         await self.relay("dev1", "restore")
         listed = (await self.client.get(f"{BASE}/devices/dev1/commands", headers=self.admin)).json()
@@ -111,6 +123,7 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_undelivered_command_reads_as_expired(self):
         await self.report("dev1", ignition=False)
+        await self.enable("dev1")
         command = (await self.relay("dev1", "cut")).json()
         self.app.state.commands.set_status(
             command["id"], expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
@@ -120,7 +133,9 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
 
     async def test_history_is_per_device_and_newest_first(self):
         await self.report("dev1", ignition=False)
+        await self.enable("dev1")
         await self.report("dev2", ignition=False)
+        await self.enable("dev2")
         await self.relay("dev1", "restore")
         await self.relay("dev2", "cut")
         await self.relay("dev1", "cut")
@@ -129,6 +144,56 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
         ).json()
         self.assertEqual([c["action"] for c in listed], ["cut", "restore"])
         self.assertTrue(all(c["device_id"] == "dev1" for c in listed))
+
+    async def test_cut_off_is_switched_off_by_default(self):
+        await self.report("dev1", ignition=False)
+        state = (await self.client.get(f"{BASE}/devices/dev1/relay", headers=self.admin)).json()
+        self.assertEqual((state["enabled"], state["changed_by"], state["commands"]), (False, None, []))
+        response = await self.relay("dev1", "cut")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("switched off", response.json()["detail"])
+
+    async def test_restore_needs_no_switch(self):
+        # Switching cut-off off right after a cut must never strand the vehicle.
+        await self.report("dev1", ignition=True)
+        self.assertEqual((await self.relay("dev1", "restore")).status_code, 202)
+
+    async def test_switching_on_and_off(self):
+        await self.report("dev1", ignition=False)
+        on = await self.enable("dev1")
+        self.assertEqual(on.status_code, 200)
+        self.assertEqual((on.json()["enabled"], on.json()["changed_by"]), (True, "admin"))
+        self.assertEqual((await self.relay("dev1", "cut")).status_code, 202)
+        off = (await self.enable("dev1", False)).json()
+        self.assertFalse(off["enabled"])
+        # The cut still waiting is cancelled, not delivered later.
+        self.assertEqual(
+            (off["commands"][0]["status"], off["commands"][0]["error"]),
+            ("failed", "relay_disabled"),
+        )
+        self.assertEqual((await self.relay("dev1", "cut")).status_code, 409)
+
+    async def test_switching_off_leaves_a_queued_restore(self):
+        await self.report("dev1", ignition=False)
+        await self.enable("dev1")
+        await self.relay("dev1", "restore")
+        off = (await self.enable("dev1", False)).json()
+        self.assertEqual(off["commands"][0]["status"], "queued")
+
+    async def test_only_an_admin_may_switch_it(self):
+        await self.client.post(
+            f"{BASE}/users",
+            json={"username": "owner", "password": "owner1234", "role": "user", "devices": ["dev1"]},
+            headers=self.admin,
+        )
+        login = await self.client.post(
+            f"{BASE}/auth/login", json={"username": "owner", "password": "owner1234"}
+        )
+        owner = {"Authorization": f"Bearer {login.json()['token']}"}
+        self.assertEqual((await self.enable("dev1", headers=owner)).status_code, 403)
+        self.assertEqual(
+            (await self.client.get(f"{BASE}/devices/dev1/relay", headers=owner)).status_code, 403
+        )
 
     async def test_unknown_action_is_rejected(self):
         response = await self.relay("dev1", "explode")

@@ -16,6 +16,8 @@ from ..repository import DeviceDetails, LocationRepository, SecretCodeTaken
 from ..schemas import (
     DeviceCommandOut,
     RelayCommandIn,
+    RelayEnabledIn,
+    RelayStateOut,
     DeviceClaimRequest,
     DeviceLocationBySecretCode,
     DeviceOut,
@@ -492,6 +494,10 @@ async def send_relay_command(
     Queue `RELAY,1#` (cut) or `RELAY,0#` (restore) for the gateway to send
     over the tracker's own connection. Admins only.
 
+    **A cut needs engine cut-off switched on for this device** (`PUT
+    /devices/{device_id}/relay/enabled`; off by default). Restore does not --
+    switching cut-off off right after a cut must never strand the vehicle.
+
     **A cut is only accepted while the ignition is off** -- stopping the fuel
     to a running engine could stall a moving vehicle. An ignition state that
     has never been reported counts as not off. The rule is checked again by
@@ -503,6 +509,11 @@ async def send_relay_command(
     replaces one still waiting. Every command is kept as an audit record.
     """
     if payload.action == "cut":
+        if not (await commands.relay_state(device_id, limit=0)).enabled:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Engine cut-off is switched off for this vehicle. Switch it on first.",
+            )
         ignition = await repo.device_ignition(device_id)
         if ignition is not False:
             raise HTTPException(
@@ -516,6 +527,44 @@ async def send_relay_command(
             )
     return await commands.create_relay_command(
         device_id, payload.action, admin.id, requester=admin.username
+    )
+
+
+@router.get(
+    "/{device_id}/relay",
+    response_model=RelayStateOut,
+    dependencies=[Depends(require_admin)],
+    summary="Engine cut-off for a device: switched on or off, and recent commands",
+)
+async def relay_state(
+    device_id: str,
+    limit: int = Query(5, ge=0, le=100),
+    commands: CommandRepository = Depends(get_commands),
+) -> RelayStateOut:
+    """One call for the dashboard's Engine panel. Off for a device nobody has
+    switched on."""
+    return await commands.relay_state(device_id, limit)
+
+
+@router.put(
+    "/{device_id}/relay/enabled",
+    response_model=RelayStateOut,
+    summary="Switch engine cut-off on or off for a device",
+)
+async def set_relay_enabled(
+    device_id: str,
+    payload: RelayEnabledIn,
+    admin: AuthenticatedUser = Depends(require_admin),
+    commands: CommandRepository = Depends(get_commands),
+) -> RelayStateOut:
+    """
+    Off by default, on demand per device. Switching it off also fails any
+    cut still waiting to be delivered (`relay_disabled`), and the gateway
+    refuses a cut for a switched-off device at delivery too. Restore stays
+    available either way.
+    """
+    return await commands.set_relay_enabled(
+        device_id, payload.enabled, admin.id, requester=admin.username
     )
 
 
