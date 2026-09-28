@@ -160,7 +160,9 @@ connection (`gps_gateway/commands.py: SessionRegistry`) calls
 `claim_device_commands()` and sends a GT06 `0x80` packet whose server flag is
 the row id, so the `0x15`/`0x21` reply completes exactly that row. The safety
 rules live in that SQL function because they must hold at delivery time, not
-request time: a cut only goes out while `device_status` says ignition is off
+request time: a cut only goes out for a device an admin switched cut-off on
+for (`device_relay`, off by default; restore never needs it) and while
+`device_status` says ignition is off
 (unknown counts as on), a command expires after `COMMAND_TTL` (5 min), and a
 newer command supersedes a queued one. The API checks ignition too, to refuse
 early; the session re-checks its own latest heartbeat. The table is the audit

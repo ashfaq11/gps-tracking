@@ -12,7 +12,7 @@ it, so its commands simply stay queued until they expire.
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
-from .schemas import DeviceCommandOut
+from .schemas import DeviceCommandOut, RelayStateOut
 
 # The PT06 LITE manual's SMS commands; GT06-family trackers accept the same
 # text over their GPRS connection as a 0x80 packet.
@@ -36,6 +36,17 @@ class CommandRepository(Protocol):
         """Newest first. A queued command past its expiry reads as expired."""
         ...
 
+    async def relay_state(self, device_id: str, limit: int = 5) -> RelayStateOut:
+        """Whether cut-off is switched on (off when never set), plus recent commands."""
+        ...
+
+    async def set_relay_enabled(
+        self, device_id: str, enabled: bool, changed_by: int | None, requester: str | None = None
+    ) -> RelayStateOut:
+        """Switch cut-off on or off. Switching off also fails any cut still
+        queued ('relay_disabled') -- a queued restore is left to go out."""
+        ...
+
 
 def _effective(command: DeviceCommandOut, now: datetime) -> DeviceCommandOut:
     if command.status == "queued" and command.expires_at <= now:
@@ -47,6 +58,37 @@ class InMemoryCommandRepository:
     def __init__(self) -> None:
         self._commands: list[DeviceCommandOut] = []
         self._next_id = 1
+        # device_id -> (enabled, changed_at, changed_by username)
+        self._relay: dict[str, tuple[bool, datetime, str | None]] = {}
+
+    async def relay_state(self, device_id: str, limit: int = 5) -> RelayStateOut:
+        enabled, changed_at, changed_by = self._relay.get(device_id, (False, None, None))
+        return RelayStateOut(
+            device_id=device_id,
+            enabled=enabled,
+            changed_at=changed_at,
+            changed_by=changed_by,
+            commands=await self.list_commands(device_id, limit),
+        )
+
+    async def set_relay_enabled(
+        self, device_id: str, enabled: bool, changed_by: int | None, requester: str | None = None
+    ) -> RelayStateOut:
+        now = datetime.now(timezone.utc)
+        self._relay[device_id] = (enabled, now, requester)
+        if not enabled:
+            self._commands = [
+                c.model_copy(
+                    update={"status": "failed", "error": "relay_disabled", "completed_at": now}
+                )
+                if c.device_id == device_id
+                and c.action == "cut"
+                and c.status == "queued"
+                and c.expires_at > now
+                else c
+                for c in self._commands
+            ]
+        return await self.relay_state(device_id)
 
     async def create_relay_command(
         self, device_id: str, action: str, requested_by: int | None, requester: str | None = None
@@ -132,6 +174,53 @@ class PostgresCommandRepository:
                     command_id,
                 )
         return DeviceCommandOut(**dict(row))
+
+    async def relay_state(self, device_id: str, limit: int = 5) -> RelayStateOut:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT r.enabled, r.changed_at, u.username AS changed_by
+                FROM device_relay r LEFT JOIN users u ON u.id = r.changed_by
+                WHERE r.device_id = $1
+                """,
+                device_id,
+            )
+        return RelayStateOut(
+            device_id=device_id,
+            enabled=bool(row and row["enabled"]),
+            changed_at=row["changed_at"] if row else None,
+            changed_by=row["changed_by"] if row else None,
+            commands=await self.list_commands(device_id, limit),
+        )
+
+    async def set_relay_enabled(
+        self, device_id: str, enabled: bool, changed_by: int | None, requester: str | None = None
+    ) -> RelayStateOut:
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO device_relay (device_id, enabled, changed_by, changed_at)
+                    VALUES ($1, $2, $3, now())
+                    ON CONFLICT (device_id) DO UPDATE
+                    SET enabled = EXCLUDED.enabled, changed_by = EXCLUDED.changed_by,
+                        changed_at = now()
+                    """,
+                    device_id,
+                    enabled,
+                    changed_by,
+                )
+                if not enabled:
+                    await conn.execute(
+                        """
+                        UPDATE device_commands
+                        SET status = 'failed', error = 'relay_disabled', completed_at = now()
+                        WHERE device_id = $1 AND action = 'cut' AND status = 'queued'
+                          AND expires_at > now()
+                        """,
+                        device_id,
+                    )
+        return await self.relay_state(device_id)
 
     async def list_commands(self, device_id: str, limit: int = 20) -> list[DeviceCommandOut]:
         async with self._pool.acquire() as conn:
