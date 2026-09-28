@@ -39,6 +39,10 @@ class Config:
     # rotate daily and are deleted once older than log_retention_days.
     log_dir: str = "logs"
     log_retention_days: int = 14
+    # How long to wait for a tracker to answer a command (engine cut-off /
+    # restore) before recording it as failed with 'no_reply'. A late answer
+    # still overrides that.
+    command_reply_timeout_s: float = 60.0
 
     @classmethod
     def from_env(cls, env=None) -> "Config":
@@ -61,5 +65,8 @@ class Config:
             log_dir=env.get("GATEWAY_LOG_DIR", cls.log_dir),
             log_retention_days=max(
                 1, int(env.get("GATEWAY_LOG_RETENTION_DAYS", cls.log_retention_days))
+            ),
+            command_reply_timeout_s=float(
+                env.get("GATEWAY_COMMAND_REPLY_TIMEOUT", cls.command_reply_timeout_s)
             ),
         )

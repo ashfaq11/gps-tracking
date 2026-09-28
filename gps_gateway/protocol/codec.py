@@ -4,8 +4,16 @@ import logging
 import struct
 from datetime import datetime, timezone
 
-from ..models import CellReport, LocationEvent, StatusEvent
-from .constants import PROTO_ALARM, PROTO_LOCATION, PROTO_LOCATION_ACC, START_SHORT, STOP_BITS
+from ..models import CellReport, CommandReply, LocationEvent, StatusEvent
+from .constants import (
+    PROTO_ALARM,
+    PROTO_COMMAND,
+    PROTO_COMMAND_REPLY_NEW,
+    PROTO_LOCATION,
+    PROTO_LOCATION_ACC,
+    START_SHORT,
+    STOP_BITS,
+)
 from .crc import crc16_itu
 
 log = logging.getLogger(__name__)
@@ -236,3 +244,55 @@ def build_ack(protocol_number: int, serial: int, content: bytes = b"") -> bytes:
     and the CRC is checked by real Concox hardware.
     """
     return build_frame(protocol_number, serial, content)
+
+
+# Language field closing a command: 0x0002 asks for English replies.
+_LANGUAGE_ENGLISH = 0x0002
+# Reply text encodings in a 0x21 reply.
+_ENCODING_UTF16 = 0x02
+
+
+def build_command(serial: int, server_flag: int, command: str) -> bytes:
+    """
+    A server command frame (protocol 0x80):
+      [1B length][4B server flag][command ASCII][2B language]
+    where the length counts the flag and the command. The tracker runs the
+    command as if it had arrived by SMS -- the PT06 manual's "RELAY,1#" --
+    and answers with a 0x15/0x21 reply carrying the same server flag.
+    """
+    text = command.encode("ascii")
+    info_len = 4 + len(text)
+    if info_len > 0xFF:
+        raise ValueError("Command too long")
+    content = (
+        bytes([info_len])
+        + struct.pack(">I", server_flag)
+        + text
+        + struct.pack(">H", _LANGUAGE_ENGLISH)
+    )
+    return build_frame(PROTO_COMMAND, serial, content)
+
+
+def decode_command_reply(protocol: int, content: bytes) -> CommandReply | None:
+    """
+    The tracker's answer to a command:
+      0x15  [1B length][4B server flag][reply text][2B language, optional]
+      0x21  [4B server flag][1B encoding: 1 ASCII, 2 UTF-16BE][reply text]
+    The 0x15 length counts the flag and the text, which is how the optional
+    language suffix is told apart from the text.
+    """
+    if protocol == PROTO_COMMAND_REPLY_NEW:
+        if len(content) < 5:
+            return None
+        flag = struct.unpack(">I", content[0:4])[0]
+        raw = content[5:]
+        codec = "utf-16-be" if content[4] == _ENCODING_UTF16 else "ascii"
+    else:
+        if len(content) < 5:
+            return None
+        info_len = content[0]
+        flag = struct.unpack(">I", content[1:5])[0]
+        raw = content[5 : 1 + info_len] if info_len >= 4 else content[5:]
+        codec = "ascii"
+    text = raw.decode(codec, errors="replace").strip("\x00").strip()
+    return CommandReply(server_flag=flag, text=text)

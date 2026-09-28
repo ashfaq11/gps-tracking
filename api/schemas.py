@@ -869,3 +869,43 @@ class GeofenceReport(BaseModel):
         description="True if the window held more crossings than one report reads; the "
         "figures then cover only the newest of them.",
     )
+
+
+# --- device commands (engine cut-off) ---
+
+RelayAction = Literal["cut", "restore"]
+CommandStatus = Literal["queued", "sent", "confirmed", "failed", "expired", "superseded"]
+
+
+class RelayCommandIn(BaseModel):
+    action: RelayAction = Field(
+        description=(
+            "`cut` stops fuel to the engine (immobilize) and is only accepted while the "
+            "ignition is off; `restore` resumes fuel and is always accepted."
+        )
+    )
+
+
+class DeviceCommandOut(BaseModel):
+    """One command sent (or waiting to be sent) to a tracker -- also the audit log."""
+
+    id: int
+    device_id: str
+    action: RelayAction
+    command: str = Field(description='The exact text sent to the tracker, e.g. "RELAY,1#".')
+    status: CommandStatus = Field(
+        description=(
+            "queued: waiting for the tracker to be online; sent: delivered, no answer yet; "
+            "confirmed: the tracker answered; failed: see `error`; expired: never delivered "
+            "in time; superseded: replaced by a newer command before delivery."
+        )
+    )
+    requested_by: str | None = Field(default=None, description="Username of who asked.")
+    requested_at: datetime
+    expires_at: datetime
+    sent_at: datetime | None = None
+    completed_at: datetime | None = None
+    reply: str | None = Field(default=None, description="The tracker's answer, verbatim.")
+    error: str | None = Field(
+        default=None, description="Why it did not go through, e.g. `ignition_on`, `no_reply`."
+    )

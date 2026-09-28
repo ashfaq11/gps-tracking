@@ -14,6 +14,11 @@ import logging
 from fastapi import FastAPI, HTTPException, status
 
 from .config import ApiConfig
+from .commands_repository import (
+    CommandRepository,
+    InMemoryCommandRepository,
+    PostgresCommandRepository,
+)
 from .geofences_repository import (
     GeofenceRepository,
     InMemoryGeofenceRepository,
@@ -115,6 +120,18 @@ async def ensure_geofences(app: FastAPI) -> GeofenceRepository:
     return app.state.geofences
 
 
+async def ensure_commands(app: FastAPI) -> CommandRepository:
+    """The device-command queue, sharing the location repository's pool (or,
+    in memory, one queue for the life of the app)."""
+    await ensure_repository(app)
+    if app.state.commands is None:
+        pool = app.state.pool
+        app.state.commands = (
+            PostgresCommandRepository(pool) if pool is not None else InMemoryCommandRepository()
+        )
+    return app.state.commands
+
+
 async def _bootstrap_admin(config: ApiConfig, users: UserRepository) -> None:
     """
     Seed the first admin so a fresh database is reachable at all.
@@ -146,6 +163,7 @@ async def close_repository(app: FastAPI) -> None:
     app.state.repository = None
     app.state.users = None
     app.state.geofences = None
+    app.state.commands = None
     app.state.pool = None
     if pool is not None:
         await pool.close()
@@ -155,6 +173,7 @@ def init_state(app: FastAPI) -> None:
     app.state.repository = None
     app.state.users = None
     app.state.geofences = None
+    app.state.commands = None
     app.state.pool = None
     # Created here rather than in lifespan, which may never run.
     app.state.repository_lock = asyncio.Lock()

@@ -147,6 +147,10 @@ class LocationRepository(Protocol):
 
     async def device_details(self, device_id: str) -> DeviceDetails: ...
 
+    async def device_ignition(self, device_id: str) -> bool | None:
+        """The device's current ignition (device_status); None if never reported."""
+        ...
+
     async def set_device_subscription(
         self,
         device_id: str,
@@ -383,6 +387,10 @@ class InMemoryLocationRepository:
         return True
 
     # --- device subscriptions ---
+
+    async def device_ignition(self, device_id: str) -> bool | None:
+        current = self._ignition.get(device_id)
+        return current[0] if current else None
 
     async def device_details(self, device_id: str) -> DeviceDetails:
         row = self._device_subscriptions.get(device_id)
@@ -848,6 +856,12 @@ class PostgresLocationRepository:
             return await conn.fetchval("SELECT 1") == 1
 
     # --- device subscriptions ---
+
+    async def device_ignition(self, device_id: str) -> bool | None:
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT ignition FROM device_status WHERE device_id = $1", device_id
+            )
 
     async def device_details(self, device_id: str) -> DeviceDetails:
         async with self._pool.acquire() as conn:
