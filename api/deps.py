@@ -7,7 +7,14 @@ from .config import ApiConfig
 from .repository import LocationRepository
 from .commands_repository import CommandRepository
 from .geofences_repository import GeofenceRepository
-from .state import ensure_commands, ensure_geofences, ensure_repository, ensure_users
+from .trackers_repository import TrackerRepository
+from .state import (
+    ensure_commands,
+    ensure_geofences,
+    ensure_repository,
+    ensure_trackers,
+    ensure_users,
+)
 from .users_repository import AuthenticatedUser, UserRepository
 
 # Declared as a security scheme rather than a plain Header parameter so that
@@ -74,6 +81,11 @@ async def get_geofences(request: Request) -> GeofenceRepository:
 async def get_commands(request: Request) -> CommandRepository:
     """Built on first use, sharing the location repository's pool."""
     return await ensure_commands(request.app)
+
+
+async def get_trackers(request: Request) -> TrackerRepository:
+    """Built on first use, sharing the location repository's pool."""
+    return await ensure_trackers(request.app)
 
 
 async def get_users(request: Request) -> UserRepository:

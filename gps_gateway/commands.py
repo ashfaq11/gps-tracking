@@ -128,6 +128,11 @@ class PostgresCommandQueue(CommandQueue):
                 log.exception("Device command listener failed; retrying in %ss", self._retry_s)
             await asyncio.sleep(self._retry_s)
 
+    @property
+    def pool(self):
+        """The small control pool, shared with the allowlist check."""
+        return self._pool
+
     async def claim(self, device_id: str) -> list[PendingCommand]:
         rows = await self._pool.fetch(
             "SELECT id, device_id, action, command FROM claim_device_commands($1)", device_id

@@ -23,7 +23,7 @@ from .errors import register_error_handlers
 from .middleware import RequestLoggingMiddleware
 from .live import run_fix_listener
 from .push import run_geofence_listener, run_motion_listener
-from .routers import devices, geofences, health, ingest, live, push, stats, users
+from .routers import devices, geofences, health, ingest, live, push, stats, trackers, users
 from .state import close_repository, ensure_repository, init_state
 
 log = logging.getLogger(__name__)
@@ -82,6 +82,10 @@ TAGS_METADATA = [
     {
         "name": "live",
         "description": "WebSocket: every new fix, pushed the instant it lands.",
+    },
+    {
+        "name": "trackers",
+        "description": "Admin: which tracker IMEIs the gateway accepts, and unknown ones it refused.",
     },
     {
         "name": "geofences",
@@ -212,6 +216,7 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     app.include_router(push.router, prefix=API_PREFIX)
     app.include_router(live.router, prefix=API_PREFIX)
     app.include_router(geofences.router, prefix=API_PREFIX)
+    app.include_router(trackers.router, prefix=API_PREFIX)
     return app
 
 

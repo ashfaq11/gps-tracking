@@ -202,10 +202,15 @@ semantics. Tests build an app via `create_app(ApiConfig(backend="memory",
 
 ## Known, accepted gaps (see README.md "Known gaps" for the full list)
 
-- **The gateway trusts the IMEI a device claims at login** — no allowlist yet.
-  Anyone who can reach the TCP port can impersonate a device.
-  With engine cut-off this matters more: an impersonator would also receive
-  that device's commands and could fake a "Success!" reply.
+- **GT06 has no device authentication** -- a tracker is whatever IMEI it
+  announces. The allowlist (`device_allowlist`, `gps_gateway/admission.py`,
+  `GATEWAY_ALLOWLIST=enforce|log|off`) refuses every IMEI nobody approved
+  (unknown ones wait in `device_login_attempts` for an admin), but cannot
+  stop someone who knows an *allowed* IMEI: they would receive that device's
+  engine commands and could fake a "Success!" reply. Owned devices are
+  allowed by a trigger on `user_devices`; the table was seeded once, on
+  creation, with every device already known -- re-running schema.sql never
+  re-adds one an admin removed.
 - **GT06 protocol variants** are unverified beyond the mainstream bit layout;
   capture real hardware with `tcpdump` before trusting a new device model.
 - **The gateway ACKs before it writes** (`gps_gateway/sinks/batching.py`):
