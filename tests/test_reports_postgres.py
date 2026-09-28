@@ -14,7 +14,7 @@ import random
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from api.reports import ReportFix, fix_time, summarize_device
+from api.reports import ReportFix, clean_route, fix_time, summarize_device
 
 DSN = os.environ.get("TEST_PG_DSN")
 PREFIX = "report-parity-"
@@ -40,6 +40,7 @@ class TestTripReportParity(unittest.IsolatedAsyncioTestCase):
         start = datetime(2026, 9, 1, tzinfo=timezone.utc)
         expected = {}
         rows = []
+        dirty_dropped = 0
         for n in range(6):
             device_id = f"{PREFIX}{n}"
             at, lat, lng = start, 12.9 + n / 100, 77.5
@@ -57,6 +58,16 @@ class TestTripReportParity(unittest.IsolatedAsyncioTestCase):
                 if moving:
                     lat += rng.uniform(-0.002, 0.002)
                     lng += rng.uniform(-0.002, 0.002)
+                # Dirty points: a one-off position 100 m - 2 km off the road
+                # (the vehicle itself carries on from where it really was),
+                # and the occasional unset 0,0.
+                row_lat, row_lng = lat, lng
+                dirt = rng.random()
+                if dirt < 0.06:
+                    row_lat += rng.choice([-1, 1]) * rng.uniform(0.001, 0.018)
+                    row_lng += rng.choice([-1, 1]) * rng.uniform(0.001, 0.018)
+                elif dirt < 0.07:
+                    row_lat, row_lng = 0.0, 0.0
                 # When it reached us: mostly on time, sometimes a buffered
                 # backlog arriving much later, now and then no tracker time
                 # at all, or a tracker clock far enough off to be ignored.
@@ -70,11 +81,16 @@ class TestTripReportParity(unittest.IsolatedAsyncioTestCase):
                 elif clock < 0.10:
                     fixed_at = received_at - timedelta(days=45)
                 effective = fix_time(fixed_at, received_at)
-                fixes.append((effective, len(fixes), ReportFix(lat, lng, speed, effective, gps_fixed)))
-                rows.append((device_id, lat, lng, speed, fixed_at, received_at, gps_fixed))
+                fixes.append(
+                    (effective, len(fixes), ReportFix(row_lat, row_lng, speed, effective, gps_fixed))
+                )
+                rows.append((device_id, row_lat, row_lng, speed, fixed_at, received_at, gps_fixed))
             # Rows are inserted in this order, so insertion order is id order.
             fixes.sort(key=lambda f: (f[0], f[1]))
-            expected[device_id] = summarize_device([f[2] for f in fixes])
+            ordered = [f[2] for f in fixes]
+            usable = [f for f in ordered if f.gps_fixed is not False and (f.latitude, f.longitude) != (0, 0)]
+            dirty_dropped += len(usable) - len(clean_route(ordered))
+            expected[device_id] = summarize_device(ordered)
         await self.pool.executemany(
             "INSERT INTO device_locations "
             "(device_id, latitude, longitude, speed_kmh, fixed_at, received_at, gps_fixed) "
@@ -100,6 +116,7 @@ class TestTripReportParity(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(report.first_fix_at, want.first_fix_at)
                 self.assertEqual(report.last_fix_at, want.last_fix_at)
         self.assertTrue(any(r.halt_count for r in reports), "the sample should contain halts")
+        self.assertGreater(dirty_dropped, 20, "the sample should contain dirty points to drop")
 
 
 if __name__ == "__main__":

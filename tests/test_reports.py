@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from api.reports import (
     ReportFix,
+    clean_route,
     fix_time,
     haversine_m,
     plausible_top_speed,
@@ -108,6 +109,50 @@ class TestSummarizeDevice(unittest.TestCase):
         trips = summarize_device([fix(m, None) for m in range(0, 12)])
         self.assertEqual(trips.halt_count, 1)
         self.assertAlmostEqual(trips.halt_minutes, 11)
+
+
+class TestCleanRoute(unittest.TestCase):
+    """The route the report measures -- the dashboard map's own filtering."""
+
+    def at(self, seconds, lat, speed=40, lng=77.59, gps_fixed=True):
+        return ReportFix(lat, lng, speed, T0 + timedelta(seconds=seconds), gps_fixed)
+
+    def test_a_dirty_point_is_left_out_of_the_distance(self):
+        # 40 km/h north; one fix lands ~250 m east of the road.
+        route = [
+            self.at(0, 12.970),
+            self.at(10, 12.971),
+            self.at(20, 12.972, lng=77.5923),
+            self.at(30, 12.973),
+            self.at(40, 12.974),
+        ]
+        self.assertEqual(len(clean_route(route)), 4)
+        trips = summarize_device(route)
+        self.assertAlmostEqual(trips.distance_km, 0.445, places=2)
+        self.assertEqual(trips.fix_count, 5)
+
+    def test_no_lock_and_unset_positions_are_left_out(self):
+        route = [
+            self.at(0, 12.970),
+            self.at(10, 12.950, gps_fixed=False),
+            self.at(20, 0.0, lng=0.0),
+            self.at(30, 12.971),
+        ]
+        self.assertEqual([f.latitude for f in clean_route(route)], [12.970, 12.971])
+
+    def test_real_driving_and_u_turns_stay(self):
+        straight = [self.at(i * 10, 12.970 + i * 0.001) for i in range(5)]
+        u_turn = [self.at(0, 12.97, 60), self.at(30, 12.9745, 60), self.at(60, 12.9702, 60)]
+        self.assertEqual(len(clean_route(straight)), 5)
+        self.assertEqual(len(clean_route(u_turn)), 3)
+
+    def test_fixes_minutes_apart_are_not_judged(self):
+        errand = [self.at(0, 12.97, 0), self.at(3600, 12.98, 0), self.at(7200, 12.97, 0)]
+        self.assertEqual(len(clean_route(errand)), 3)
+
+    def test_a_vehicle_with_only_unusable_fixes_reports_nothing_driven(self):
+        trips = summarize_device([self.at(0, 12.97, gps_fixed=False), self.at(10, 12.98, gps_fixed=False)])
+        self.assertEqual((trips.distance_km, trips.fix_count, trips.max_speed_kmh), (0, 2, None))
 
 
 class TestFixTime(unittest.TestCase):

@@ -9,7 +9,19 @@ the SQL against it, so the two cannot quietly disagree about what a halt is.
 Definitions, per device, over its fixes in the window ordered by (fix
 time, id), with a missing speed read as 0 like the dashboard does. A fix's
 time is when the tracker took it (`fixed_at`), not when it reached us --
-see `fix_time`:
+see `fix_time`.
+
+The positions counted (`fix_count`, first/last fix) are every fix in the
+window. Everything else is measured over the *route* -- `clean_route`,
+the same filtering the dashboard's map applies (core/format.ts cleanRoute):
+
+- no GPS lock (gps_fixed false -- the gateway also stores a GT06 fix from
+  0 satellites that way) and 0,0 positions are left out
+- a dirty point is left out: a fix farther from both neighbours than the
+  speeds reported at either end of each leg allow (average, x ROUTE_SPEED_SLACK,
+  + ROUTE_JITTER_M), while those neighbours agree with each other; fixes
+  more than ROUTE_SPIKE_MAX_GAP apart are not judged. Neighbours are the
+  adjacent usable fixes -- what one window-function pass in SQL can see.
 
 - distance: the sum of great-circle distances between consecutive fixes, the
   same haversine the dashboard's trackDistanceKm uses.
@@ -43,6 +55,10 @@ CLOCK_BEHIND_LIMIT = timedelta(days=30)
 MAX_RUNNING_GAP = timedelta(minutes=10)
 MAX_PLAUSIBLE_SPEED_KMH = 200
 SPIKE_KMH = 50
+# clean_route's dirty-point test; the same numbers as core/format.ts.
+ROUTE_JITTER_M = 40.0
+ROUTE_SPEED_SLACK = 1.5
+ROUTE_SPIKE_MAX_GAP = timedelta(minutes=5)
 
 _EARTH_RADIUS_M = 6_371_000
 
@@ -116,8 +132,48 @@ def plausible_top_speed(fixes: list[ReportFix]) -> int | None:
     return best
 
 
+def _usable(fix: ReportFix) -> bool:
+    return fix.gps_fixed is not False and not (fix.latitude == 0 and fix.longitude == 0)
+
+
+def _reach(a: ReportFix, b: ReportFix, seconds: float) -> float:
+    """The farthest a vehicle could plausibly have gone between two fixes."""
+    metres_per_second = ((a.speed_kmh or 0) + (b.speed_kmh or 0)) / 2 / 3.6
+    return metres_per_second * max(seconds, 0.0) * ROUTE_SPEED_SLACK + ROUTE_JITTER_M
+
+
+def _is_dirty(before: ReportFix, fix: ReportFix, after: ReportFix) -> bool:
+    seconds_out = (fix.at - before.at).total_seconds()
+    seconds_back = (after.at - fix.at).total_seconds()
+    limit = ROUTE_SPIKE_MAX_GAP.total_seconds()
+    if seconds_out > limit or seconds_back > limit:
+        return False
+
+    def dist(a: ReportFix, b: ReportFix) -> float:
+        return haversine_m(a.latitude, a.longitude, b.latitude, b.longitude)
+
+    return (
+        dist(before, fix) > _reach(before, fix, seconds_out)
+        and dist(fix, after) > _reach(fix, after, seconds_back)
+        and dist(before, after) <= _reach(before, after, seconds_out + seconds_back)
+    )
+
+
+def clean_route(fixes: list[ReportFix]) -> list[ReportFix]:
+    """The fixes a route is measured through -- see the module docstring.
+    `fixes` in (at, id) order; so is the result."""
+    usable = [f for f in fixes if _usable(f)]
+    return [
+        fix
+        for i, fix in enumerate(usable)
+        if not (0 < i < len(usable) - 1 and _is_dirty(usable[i - 1], fix, usable[i + 1]))
+    ]
+
+
 def summarize_device(fixes: list[ReportFix]) -> DeviceTrips:
     """`fixes` must already be in (at, id) order."""
+    counted = fixes
+    fixes = clean_route(fixes)
     metres = 0.0
     running = timedelta()
     halts: list[timedelta] = []
@@ -156,7 +212,7 @@ def summarize_device(fixes: list[ReportFix]) -> DeviceTrips:
         halt_count=len(halts),
         halt_minutes=sum(h.total_seconds() for h in halts) / 60,
         longest_halt_minutes=max((h.total_seconds() for h in halts), default=0) / 60,
-        fix_count=len(fixes),
-        first_fix_at=fixes[0].at if fixes else None,
-        last_fix_at=fixes[-1].at if fixes else None,
+        fix_count=len(counted),
+        first_fix_at=counted[0].at if counted else None,
+        last_fix_at=counted[-1].at if counted else None,
     )
