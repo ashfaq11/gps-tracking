@@ -183,7 +183,12 @@ def decode_location(
         longitude=round(longitude, 6),
         speed_kmh=speed,
         course_deg=flags & _COURSE_MASK,
-        gps_fixed=bool(flags & _BIT_GPS_FIXED),
+        # The flag alone is not enough: right after powering up a tracker
+        # sends its last saved position -- often hours old -- with the flag
+        # still set but 0 satellites. No satellites is no fix, and stored as
+        # such, everything downstream (geofence crossings, top speed, the
+        # route) already leaves it out.
+        gps_fixed=bool(flags & _BIT_GPS_FIXED) and satellites > 0,
         satellites=satellites,
         fixed_at=fixed_at,
         mcc=mcc,

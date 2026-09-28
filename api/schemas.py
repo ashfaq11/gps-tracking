@@ -47,7 +47,15 @@ class LocationIn(BaseModel):
     speed_kmh: int = Field(default=0, ge=0, le=1000)
     course_deg: int = Field(default=0, ge=0, le=359, description="Heading, 0 = north.")
     gps_fixed: bool = Field(default=True, description="False when the fix is not trustworthy.")
-    satellites: int = Field(default=0, ge=0, le=64)
+    satellites: int | None = Field(
+        default=None,
+        ge=0,
+        le=64,
+        description=(
+            "Satellites used for the fix. Omit if unknown -- 0 means the position was "
+            "not from GPS at all, and it is then left off routes and reports."
+        ),
+    )
     fixed_at: datetime | None = Field(
         default=None,
         description="When the device took the fix. Null if its clock was unset; "

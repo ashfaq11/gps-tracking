@@ -100,6 +100,12 @@ window-function query in `PostgresLocationRepository.trip_report`, while the
 in-memory backend calls `summarize_device` directly. Change a rule in both,
 then run `tests/test_reports_postgres.py` with `TEST_PG_DSN` set: it feeds
 random trips to both and fails on any disagreement.
+Everything but the position count is measured over `clean_route` -- no-lock
+and 0,0 fixes and "dirty points" (a fix farther from both neighbours than
+their reported speeds allow) left out -- the same filtering as the
+dashboard map's `cleanRoute` (core/format.ts); keep the two in step. The
+gateway stores a GT06 fix from 0 satellites as `gps_fixed = false`, so
+geofence crossings and top speed skip it too.
 
 **Auth: opaque bearer tokens, not JWT.** `POST /auth/login` returns a random
 token (`api/security.py`); the server stores its SHA-256 fingerprint and

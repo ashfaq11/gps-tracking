@@ -15,6 +15,9 @@ from .reports import (
     SPIKE_KMH,
     CLOCK_AHEAD_LIMIT,
     CLOCK_BEHIND_LIMIT,
+    ROUTE_JITTER_M,
+    ROUTE_SPEED_SLACK,
+    ROUTE_SPIKE_MAX_GAP,
     ReportFix,
     fix_time,
     summarize_device,
@@ -759,6 +762,53 @@ class PostgresLocationRepository:
                           WHERE ds.device_id = dl.device_id AND ds.subscription_end_date <= now()
                       )
                 ),
+                win AS (
+                    SELECT * FROM base WHERE at >= $1 AND at <= $2
+                ),
+                -- Every fix counts as a position; the route is measured below.
+                counts AS (
+                    SELECT device_id, count(*) AS fix_count,
+                           min(at) AS first_fix_at, max(at) AS last_fix_at
+                    FROM win GROUP BY device_id
+                ),
+                -- clean_route, step 1: a GPS lock and a real position.
+                usable AS (
+                    SELECT device_id, id, latitude, longitude, speed_kmh, at, gps_fixed,
+                           COALESCE(speed_kmh, 0)                     AS speed,
+                           LAG(latitude) OVER w                       AS p_lat,
+                           LAG(longitude) OVER w                      AS p_lon,
+                           LAG(at) OVER w                             AS p_at,
+                           LAG(COALESCE(speed_kmh, 0)) OVER w         AS p_speed,
+                           LEAD(latitude) OVER w                      AS n_lat,
+                           LEAD(longitude) OVER w                     AS n_lon,
+                           LEAD(at) OVER w                            AS n_at,
+                           LEAD(COALESCE(speed_kmh, 0)) OVER w        AS n_speed
+                    FROM win
+                    WHERE gps_fixed IS DISTINCT FROM false
+                      AND NOT (latitude = 0 AND longitude = 0)
+                    WINDOW w AS (PARTITION BY device_id ORDER BY at, id)
+                ),
+                -- clean_route, step 2: no dirty point -- a fix farther from
+                -- both neighbours than their reported speeds allow, while
+                -- the neighbours agree with each other.
+                kept AS (
+                    SELECT device_id, id, latitude, longitude, speed_kmh, at, gps_fixed
+                    FROM usable
+                    WHERE NOT (
+                        p_at IS NOT NULL AND n_at IS NOT NULL
+                        AND extract(epoch FROM at - p_at) <= $10
+                        AND extract(epoch FROM n_at - at) <= $10
+                        AND 2 * 6371000 * asin(least(1, sqrt(power(sin(radians(latitude - p_lat) / 2), 2) + cos(radians(p_lat)) * cos(radians(latitude)) * power(sin(radians(longitude - p_lon) / 2), 2))))
+                            > (p_speed + speed) / 2.0 / 3.6
+                              * extract(epoch FROM at - p_at) * $11 + $12
+                        AND 2 * 6371000 * asin(least(1, sqrt(power(sin(radians(n_lat - latitude) / 2), 2) + cos(radians(latitude)) * cos(radians(n_lat)) * power(sin(radians(n_lon - longitude) / 2), 2))))
+                            > (speed + n_speed) / 2.0 / 3.6
+                              * extract(epoch FROM n_at - at) * $11 + $12
+                        AND 2 * 6371000 * asin(least(1, sqrt(power(sin(radians(n_lat - p_lat) / 2), 2) + cos(radians(p_lat)) * cos(radians(n_lat)) * power(sin(radians(n_lon - p_lon) / 2), 2))))
+                            <= (p_speed + n_speed) / 2.0 / 3.6
+                              * extract(epoch FROM n_at - p_at) * $11 + $12
+                    )
+                ),
                 f AS (
                     SELECT device_id, id, latitude, longitude, speed_kmh, at, gps_fixed,
                            COALESCE(speed_kmh, 0)                     AS speed,
@@ -767,19 +817,12 @@ class PostgresLocationRepository:
                            LAG(longitude) OVER w                      AS p_lon,
                            LAG(at) OVER w                             AS p_at,
                            LAG(COALESCE(speed_kmh, 0)) OVER w         AS p_speed
-                    FROM base
-                    WHERE at >= $1 AND at <= $2
+                    FROM kept
                     WINDOW w AS (PARTITION BY device_id ORDER BY at, id)
                 ),
                 seg AS (
                     SELECT f.*,
-                           CASE WHEN p_lat IS NULL THEN 0 ELSE
-                               2 * 6371000 * asin(least(1, sqrt(
-                                   power(sin(radians(latitude - p_lat) / 2), 2)
-                                   + cos(radians(p_lat)) * cos(radians(latitude))
-                                     * power(sin(radians(longitude - p_lon) / 2), 2)
-                               )))
-                           END                                        AS metres,
+                           CASE WHEN p_lat IS NULL THEN 0 ELSE 2 * 6371000 * asin(least(1, sqrt(power(sin(radians(latitude - p_lat) / 2), 2) + cos(radians(p_lat)) * cos(radians(latitude)) * power(sin(radians(longitude - p_lon) / 2), 2)))) END AS metres,
                            CASE WHEN p_speed > 0 AND at - p_at <= $5
                                 THEN extract(epoch FROM at - p_at) ELSE 0
                            END                                        AS running_s,
@@ -798,32 +841,42 @@ class PostgresLocationRepository:
                 halt_totals AS (
                     SELECT device_id, count(*) AS n, sum(secs) AS secs, max(secs) AS longest
                     FROM halts GROUP BY device_id
+                ),
+                route AS (
+                    SELECT s.device_id,
+                           sum(s.metres) / 1000                     AS distance_km,
+                           -- Plausible readings only: under the ceiling, and
+                           -- not a spike above both neighbours (a missing
+                           -- neighbour does not count against it).
+                           max(s.speed_kmh) FILTER (
+                               WHERE s.speed_kmh <= $6
+                                 AND NOT (
+                                     (s.p_speed IS NOT NULL OR s.n_speed IS NOT NULL)
+                                     AND (s.p_speed IS NULL OR s.speed_kmh > s.p_speed + $7)
+                                     AND (s.n_speed IS NULL OR s.speed_kmh > s.n_speed + $7)
+                                 )
+                           )                                        AS max_speed_kmh,
+                           sum(s.running_s) / 60                    AS running_minutes,
+                           COALESCE(max(h.n), 0)                    AS halt_count,
+                           COALESCE(max(h.secs), 0) / 60            AS halt_minutes,
+                           COALESCE(max(h.longest), 0) / 60         AS longest_halt_minutes
+                    FROM seg s
+                    LEFT JOIN halt_totals h ON h.device_id = s.device_id
+                    GROUP BY s.device_id
                 )
-                SELECT s.device_id,
-                       sum(s.metres) / 1000                     AS distance_km,
-                       -- Plausible readings only: a GPS lock, under the
-                       -- ceiling, and not a spike above both neighbours
-                       -- (a missing neighbour does not count against it).
-                       max(s.speed_kmh) FILTER (
-                           WHERE s.gps_fixed IS DISTINCT FROM false
-                             AND s.speed_kmh <= $6
-                             AND NOT (
-                                 (s.p_speed IS NOT NULL OR s.n_speed IS NOT NULL)
-                                 AND (s.p_speed IS NULL OR s.speed_kmh > s.p_speed + $7)
-                                 AND (s.n_speed IS NULL OR s.speed_kmh > s.n_speed + $7)
-                             )
-                       )                                        AS max_speed_kmh,
-                       sum(s.running_s) / 60                    AS running_minutes,
-                       COALESCE(max(h.n), 0)                    AS halt_count,
-                       COALESCE(max(h.secs), 0) / 60            AS halt_minutes,
-                       COALESCE(max(h.longest), 0) / 60         AS longest_halt_minutes,
-                       count(*)                                 AS fix_count,
-                       min(s.at)                                AS first_fix_at,
-                       max(s.at)                                AS last_fix_at
-                FROM seg s
-                LEFT JOIN halt_totals h ON h.device_id = s.device_id
-                GROUP BY s.device_id
-                ORDER BY distance_km DESC, s.device_id
+                -- From counts, so a vehicle whose every fix was left off the
+                -- route still appears (with nothing driven).
+                SELECT c.device_id,
+                       COALESCE(r.distance_km, 0)               AS distance_km,
+                       r.max_speed_kmh,
+                       COALESCE(r.running_minutes, 0)           AS running_minutes,
+                       COALESCE(r.halt_count, 0)                AS halt_count,
+                       COALESCE(r.halt_minutes, 0)              AS halt_minutes,
+                       COALESCE(r.longest_halt_minutes, 0)      AS longest_halt_minutes,
+                       c.fix_count, c.first_fix_at, c.last_fix_at
+                FROM counts c
+                LEFT JOIN route r ON r.device_id = c.device_id
+                ORDER BY distance_km DESC, c.device_id
                 """,
                 since,
                 until,
@@ -834,6 +887,9 @@ class PostgresLocationRepository:
                 SPIKE_KMH,
                 CLOCK_AHEAD_LIMIT,
                 CLOCK_BEHIND_LIMIT,
+                ROUTE_SPIKE_MAX_GAP.total_seconds(),
+                ROUTE_SPEED_SLACK,
+                ROUTE_JITTER_M,
             )
         return [
             DeviceReport(

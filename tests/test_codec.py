@@ -337,3 +337,17 @@ class TestCommands(unittest.TestCase):
         from gps_gateway.protocol import PROTO_COMMAND_REPLY, decode_command_reply
 
         self.assertIsNone(decode_command_reply(PROTO_COMMAND_REPLY, b"\x05\x00"))
+
+
+class TestZeroSatellites(unittest.TestCase):
+    def test_a_position_from_zero_satellites_is_not_a_fix(self):
+        # GPS info byte 0xC0: info length 12, 0 satellites; flags say "fixed".
+        content = bytes.fromhex("0F0C1D023305") + b"\xc0" + SAMPLE_LOCATION[7:]
+        event = decode_location(content, "dev")
+        self.assertEqual(event.satellites, 0)
+        self.assertFalse(event.gps_fixed)
+
+    def test_a_real_fix_stays_fixed(self):
+        event = decode_location(SAMPLE_LOCATION, "dev")
+        self.assertEqual(event.satellites, 9)
+        self.assertTrue(event.gps_fixed)
