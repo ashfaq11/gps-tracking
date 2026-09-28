@@ -751,3 +751,110 @@ BEGIN
     END LOOP;
 END
 $grant_geofences$;
+
+
+-- ---------------------------------------------------------------------------
+-- Device commands: engine cut-off / restore over the tracker's own connection.
+--
+-- The API inserts a row; the trigger below tells the gateway, which holds the
+-- tracker's TCP connection, and the gateway sends the text (the PT06 manual's
+-- "RELAY,1#" cut fuel, "RELAY,0#" resume) as a GT06 0x80 packet. The row is
+-- also the audit log: who asked, when, what was sent, what the tracker said.
+--
+-- Safety lives here, not in either process, because it has to hold at the
+-- moment of delivery -- a command can wait in the queue while the tracker is
+-- offline, and the ignition can come on meanwhile:
+-- - a cut is only ever delivered while device_status says ignition is off
+--   (unknown counts as not off); otherwise it fails with 'ignition_on'
+-- - an undelivered command expires at expires_at, so a tracker coming back
+--   online hours later never acts on a stale request
+-- - a newer command for the same device supersedes any still queued
+
+CREATE TABLE IF NOT EXISTS device_commands (
+    id           BIGSERIAL PRIMARY KEY,
+    device_id    TEXT        NOT NULL,
+    action       TEXT        NOT NULL CHECK (action IN ('cut', 'restore')),
+    -- The exact text sent to the tracker.
+    command      TEXT        NOT NULL,
+    status       TEXT        NOT NULL DEFAULT 'queued' CHECK (status IN (
+                     'queued', 'sent', 'confirmed', 'failed', 'expired', 'superseded')),
+    requested_by BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,
+    sent_at      TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    -- What the tracker answered, verbatim.
+    reply        TEXT,
+    -- Why it did not go through: 'ignition_on', 'no_reply', ...
+    error        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS device_commands_device_idx
+    ON device_commands (device_id, id DESC);
+CREATE INDEX IF NOT EXISTS device_commands_queued_idx
+    ON device_commands (device_id) WHERE status = 'queued';
+
+CREATE OR REPLACE FUNCTION notify_device_command() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_notify('device_command', NEW.device_id);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS device_commands_notify ON device_commands;
+CREATE TRIGGER device_commands_notify
+    AFTER INSERT ON device_commands
+    FOR EACH ROW EXECUTE FUNCTION notify_device_command();
+
+-- The gateway's one entry point: settle what can no longer be sent, then
+-- hand over (and mark sent) what can, oldest first. SKIP LOCKED so two
+-- gateway processes never both take the same command.
+CREATE OR REPLACE FUNCTION claim_device_commands(p_device_id TEXT)
+RETURNS SETOF device_commands AS $$
+BEGIN
+    UPDATE device_commands
+    SET status = 'expired', completed_at = now()
+    WHERE device_id = p_device_id AND status = 'queued' AND expires_at <= now();
+
+    UPDATE device_commands
+    SET status = 'failed', error = 'ignition_on', completed_at = now()
+    WHERE device_id = p_device_id AND status = 'queued' AND action = 'cut'
+      AND NOT EXISTS (
+          SELECT 1 FROM device_status s
+          WHERE s.device_id = p_device_id AND s.ignition = false
+      );
+
+    RETURN QUERY
+    UPDATE device_commands c
+    SET status = 'sent', sent_at = now()
+    WHERE c.id IN (
+        SELECT q.id FROM device_commands q
+        WHERE q.device_id = p_device_id AND q.status = 'queued'
+        ORDER BY q.id
+        FOR UPDATE SKIP LOCKED
+    )
+    RETURNING c.*;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Same ownership fix as the geofence grants above: the API writes commands,
+-- the gateway claims and completes them.
+DO $grant_device_commands$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT DISTINCT who FROM (
+            SELECT c.relowner::regrole::text AS who
+            FROM pg_class c WHERE c.relname = 'device_locations'
+            UNION
+            SELECT a.grantee::regrole::text
+            FROM pg_class c, aclexplode(c.relacl) a
+            WHERE c.relname = 'device_locations' AND a.privilege_type = 'INSERT' AND a.grantee <> 0
+        ) AS writers
+    LOOP
+        EXECUTE format('GRANT SELECT, INSERT, UPDATE ON device_commands TO %s', r.who);
+        EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE device_commands_id_seq TO %s', r.who);
+    END LOOP;
+END
+$grant_device_commands$;

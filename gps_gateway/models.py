@@ -49,6 +49,18 @@ class StatusEvent:
 
 
 @dataclass
+class CommandReply:
+    """
+    A tracker's answer to a server command (protocol 0x15 or 0x21).
+    `server_flag` echoes the one the command was sent with -- this server
+    uses the command's database id, so the reply finds its command exactly.
+    """
+
+    server_flag: int
+    text: str
+
+
+@dataclass
 class CellReport:
     """
     An LBS-only packet (protocol 0x18): the serving cell with no GPS

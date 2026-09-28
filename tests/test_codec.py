@@ -284,3 +284,56 @@ class TestBuildAck(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCommands(unittest.TestCase):
+    """Server commands (0x80) and the tracker's replies (0x15 / 0x21)."""
+
+    def test_command_frame_layout(self):
+        from gps_gateway.protocol import PROTO_COMMAND, build_command
+        from gps_gateway.protocol.framing import FrameDecoder
+
+        raw = build_command(serial=7, server_flag=42, command="RELAY,1#")
+        [frame] = FrameDecoder().feed(raw)
+        self.assertEqual(frame.protocol, PROTO_COMMAND)
+        self.assertEqual(frame.serial, 7)
+        # [len = 4 + 8][flag 42][RELAY,1#][language 0x0002]
+        self.assertEqual(frame.content, bytes([12]) + (42).to_bytes(4, "big") + b"RELAY,1#" + b"\x00\x02")
+
+    def test_command_must_fit_a_short_frame(self):
+        from gps_gateway.protocol import build_command
+
+        with self.assertRaises(ValueError):
+            build_command(1, 1, "X" * 300)
+
+    def test_classic_reply_with_language_suffix(self):
+        from gps_gateway.protocol import PROTO_COMMAND_REPLY, decode_command_reply
+
+        text = b"Cut off the fuel supply: Success!"
+        content = bytes([4 + len(text)]) + (42).to_bytes(4, "big") + text + b"\x00\x02"
+        reply = decode_command_reply(PROTO_COMMAND_REPLY, content)
+        self.assertEqual((reply.server_flag, reply.text), (42, "Cut off the fuel supply: Success!"))
+
+    def test_classic_reply_without_language_suffix(self):
+        from gps_gateway.protocol import PROTO_COMMAND_REPLY, decode_command_reply
+
+        text = b"Restore fuel supply: Success!"
+        content = bytes([4 + len(text)]) + (9).to_bytes(4, "big") + text
+        self.assertEqual(decode_command_reply(PROTO_COMMAND_REPLY, content).text, text.decode())
+
+    def test_new_reply_ascii_and_utf16(self):
+        from gps_gateway.protocol import PROTO_COMMAND_REPLY_NEW, decode_command_reply
+
+        ascii_reply = decode_command_reply(
+            PROTO_COMMAND_REPLY_NEW, (5).to_bytes(4, "big") + b"\x01" + b"RELAY=1 OK"
+        )
+        self.assertEqual((ascii_reply.server_flag, ascii_reply.text), (5, "RELAY=1 OK"))
+        utf16 = decode_command_reply(
+            PROTO_COMMAND_REPLY_NEW, (6).to_bytes(4, "big") + b"\x02" + "OK".encode("utf-16-be")
+        )
+        self.assertEqual(utf16.text, "OK")
+
+    def test_truncated_reply_is_ignored(self):
+        from gps_gateway.protocol import PROTO_COMMAND_REPLY, decode_command_reply
+
+        self.assertIsNone(decode_command_reply(PROTO_COMMAND_REPLY, b"\x05\x00"))

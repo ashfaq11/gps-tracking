@@ -152,6 +152,20 @@ unsubscribing still work anywhere, only delivery needs a long-running host.
 `python -m api.push genkey` mints the `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`
 pair `api/config.py` reads.
 
+**Engine cut-off travels API → Postgres → gateway, never API → gateway.**
+`POST /devices/{id}/relay` (admin-only) inserts a `device_commands` row
+(`RELAY,1#` cut / `RELAY,0#` restore, per the PT06 manual); a trigger
+`NOTIFY`s `device_command`, and the gateway process holding that tracker's
+connection (`gps_gateway/commands.py: SessionRegistry`) calls
+`claim_device_commands()` and sends a GT06 `0x80` packet whose server flag is
+the row id, so the `0x15`/`0x21` reply completes exactly that row. The safety
+rules live in that SQL function because they must hold at delivery time, not
+request time: a cut only goes out while `device_status` says ignition is off
+(unknown counts as on), a command expires after `COMMAND_TTL` (5 min), and a
+newer command supersedes a queued one. The API checks ignition too, to refuse
+early; the session re-checks its own latest heartbeat. The table is the audit
+log -- never delete from it.
+
 **Serverless-safe startup.** Vercel does not reliably run ASGI lifespan
 events, so the connection pool is built lazily on first request
 (`api/state.py`), not in a startup hook — otherwise every request would 503
@@ -190,6 +204,8 @@ semantics. Tests build an app via `create_app(ApiConfig(backend="memory",
 
 - **The gateway trusts the IMEI a device claims at login** — no allowlist yet.
   Anyone who can reach the TCP port can impersonate a device.
+  With engine cut-off this matters more: an impersonator would also receive
+  that device's commands and could fake a "Success!" reply.
 - **GT06 protocol variants** are unverified beyond the mainstream bit layout;
   capture real hardware with `tcpdump` before trusting a new device model.
 - **The gateway ACKs before it writes** (`gps_gateway/sinks/batching.py`):

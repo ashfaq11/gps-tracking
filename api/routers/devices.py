@@ -3,9 +3,19 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..config import ApiConfig
-from ..deps import current_user, get_config, get_repository, get_users, require_admin
+from ..commands_repository import CommandRepository
+from ..deps import (
+    current_user,
+    get_commands,
+    get_config,
+    get_repository,
+    get_users,
+    require_admin,
+)
 from ..repository import DeviceDetails, LocationRepository, SecretCodeTaken
 from ..schemas import (
+    DeviceCommandOut,
+    RelayCommandIn,
     DeviceClaimRequest,
     DeviceLocationBySecretCode,
     DeviceOut,
@@ -456,6 +466,73 @@ async def subscription_history(
     device, it simply has no history yet.
     """
     return await repo.device_subscription_history(device_id)
+
+
+# --- engine cut-off (relay) ---
+
+
+@router.post(
+    "/{device_id}/relay",
+    response_model=DeviceCommandOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Cut or restore the engine's fuel supply through the tracker's relay",
+    response_description="The queued command; follow it with GET /devices/{device_id}/commands.",
+    responses={
+        409: {"description": "A cut was asked for while the ignition is on, or not known."}
+    },
+)
+async def send_relay_command(
+    device_id: str,
+    payload: RelayCommandIn,
+    admin: AuthenticatedUser = Depends(require_admin),
+    repo: LocationRepository = Depends(get_repository),
+    commands: CommandRepository = Depends(get_commands),
+) -> DeviceCommandOut:
+    """
+    Queue `RELAY,1#` (cut) or `RELAY,0#` (restore) for the gateway to send
+    over the tracker's own connection. Admins only.
+
+    **A cut is only accepted while the ignition is off** -- stopping the fuel
+    to a running engine could stall a moving vehicle. An ignition state that
+    has never been reported counts as not off. The rule is checked again by
+    the gateway at the moment of delivery (sql/schema.sql's
+    claim_device_commands), since the ignition can come on while a command
+    waits for an offline tracker. Restore is always accepted.
+
+    A command not delivered within five minutes expires, and a newer command
+    replaces one still waiting. Every command is kept as an audit record.
+    """
+    if payload.action == "cut":
+        ignition = await repo.device_ignition(device_id)
+        if ignition is not False:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "The engine can only be cut while the ignition is off."
+                    if ignition
+                    else "The engine can only be cut while the ignition is off, and this "
+                    "vehicle has not reported its ignition yet."
+                ),
+            )
+    return await commands.create_relay_command(
+        device_id, payload.action, admin.id, requester=admin.username
+    )
+
+
+@router.get(
+    "/{device_id}/commands",
+    response_model=list[DeviceCommandOut],
+    dependencies=[Depends(require_admin)],
+    summary="Commands sent to a device, newest first",
+    response_description="The device's command history -- also the audit log.",
+)
+async def list_device_commands(
+    device_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    commands: CommandRepository = Depends(get_commands),
+) -> list[DeviceCommandOut]:
+    """Who asked for what, when, and what the tracker answered."""
+    return await commands.list_commands(device_id, limit)
 
 
 # --- secret code for anonymous access ---

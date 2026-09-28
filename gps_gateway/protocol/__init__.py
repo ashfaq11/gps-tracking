@@ -2,7 +2,9 @@
 
 from .codec import (
     build_ack,
+    build_command,
     build_frame,
+    decode_command_reply,
     decode_heartbeat,
     decode_lbs,
     decode_location,
@@ -10,6 +12,9 @@ from .codec import (
 )
 from .constants import (
     PROTO_ALARM,
+    PROTO_COMMAND,
+    PROTO_COMMAND_REPLY,
+    PROTO_COMMAND_REPLY_NEW,
     PROTO_HEARTBEAT,
     PROTO_LBS,
     PROTO_LOCATION,
@@ -24,6 +29,9 @@ from .framing import Frame, FrameDecoder
 
 __all__ = [
     "PROTO_ALARM",
+    "PROTO_COMMAND",
+    "PROTO_COMMAND_REPLY",
+    "PROTO_COMMAND_REPLY_NEW",
     "PROTO_HEARTBEAT",
     "PROTO_LBS",
     "PROTO_LOCATION",
@@ -34,7 +42,9 @@ __all__ = [
     "STOP_BITS",
     "crc16_itu",
     "build_ack",
+    "build_command",
     "build_frame",
+    "decode_command_reply",
     "decode_heartbeat",
     "decode_lbs",
     "decode_location",

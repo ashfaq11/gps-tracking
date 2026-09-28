@@ -29,3 +29,10 @@ PROTO_LOCATION_ACC = 0x22
 PROTO_HEARTBEAT = 0x13
 PROTO_ALARM = 0x16
 PROTO_LBS = 0x18
+# Server -> device: a text command (e.g. "RELAY,1#") over the open connection,
+# the same text the tracker would accept by SMS.
+PROTO_COMMAND = 0x80
+# Device -> server: the tracker's answer to a command. 0x15 on the classic
+# GT06 firmware; 0x21 on newer ones, which also say how the text is encoded.
+PROTO_COMMAND_REPLY = 0x15
+PROTO_COMMAND_REPLY_NEW = 0x21

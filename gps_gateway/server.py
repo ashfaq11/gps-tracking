@@ -4,17 +4,28 @@ import asyncio
 import logging
 from typing import Optional
 
+from .commands import (
+    CommandQueue,
+    Deliverable,
+    SessionRegistry,
+    build_command_queue,
+    reply_is_failure,
+)
 from .config import Config
 from .logging_setup import configure_logging
 from .models import LocationEvent, StatusEvent
 from .protocol import (
     PROTO_ALARM,
+    PROTO_COMMAND_REPLY,
+    PROTO_COMMAND_REPLY_NEW,
     PROTO_HEARTBEAT,
     PROTO_LBS,
     PROTO_LOCATION,
     PROTO_LOCATION_ACC,
     PROTO_LOGIN,
     build_ack,
+    build_command,
+    decode_command_reply,
     decode_heartbeat,
     decode_lbs,
     decode_location,
@@ -28,19 +39,38 @@ log = logging.getLogger(__name__)
 _READ_SIZE = 4096
 
 
-class DeviceSession:
+class DeviceSession(Deliverable):
     """
     Per-connection state. A tracker logs in once, then streams location and
-    heartbeat frames over the same socket until it loses signal.
+    heartbeat frames over the same socket until it loses signal. The same
+    socket carries commands the other way (see gps_gateway/commands.py).
     """
 
-    def __init__(self, sink: Sink, config: Config):
+    def __init__(
+        self,
+        sink: Sink,
+        config: Config,
+        commands: CommandQueue | None = None,
+        registry: SessionRegistry | None = None,
+    ):
         self.sink = sink
         self.config = config
+        self.commands = commands or CommandQueue()
+        self.registry = registry
         self.device_id: Optional[str] = None
         self.decoder = FrameDecoder(max_buffer_bytes=config.max_buffer_bytes)
+        self.writer: asyncio.StreamWriter | None = None
+        # Ignition as this tracker last reported it on this connection -- a
+        # fresher view than device_status for the last check before a cut.
+        self.ignition: bool | None = None
+        self._out_serial = 0
+        # Command id -> timer that records 'no_reply' if no answer comes.
+        self._awaiting: dict[int, asyncio.TimerHandle] = {}
+        self._delivery_lock = asyncio.Lock()
+        self._delivery_tasks: set[asyncio.Task] = set()
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.writer = writer
         peer = writer.get_extra_info("peername")
         log.info("Connection opened from %s", peer)
         try:
@@ -65,6 +95,8 @@ class DeviceSession:
             # One malformed device must not take down the listener.
             log.exception("Unhandled error for device=%s peer=%s", self.device_id, peer)
         finally:
+            if self.registry is not None and self.device_id:
+                self.registry.remove(self.device_id, self)
             await self._close(writer)
             log.info(
                 "Connection closed for device=%s peer=%s (dropped_frames=%d)",
@@ -95,16 +127,23 @@ class DeviceSession:
         every publish has returned: for BatchingSink that means queued, for a
         sink without batching it means written.
         """
+        self.writer = writer
         acks: list[Frame] = []
         publishes = []
+        logged_in = False
         for frame in frames:
             if frame.protocol == PROTO_LOGIN:
                 device_id = decode_login(frame.content)
                 if device_id is None:
                     log.warning("Rejecting unreadable login packet")
                     continue
+                if self.registry is not None and self.device_id and self.device_id != device_id:
+                    self.registry.remove(self.device_id, self)
                 self.device_id = device_id
                 log.info("Device logged in: %s", self.device_id)
+                if self.registry is not None:
+                    self.registry.add(device_id, self)
+                logged_in = True
                 acks.append(frame)
 
             elif frame.protocol in (PROTO_LOCATION, PROTO_LOCATION_ACC, PROTO_ALARM):
@@ -115,6 +154,8 @@ class DeviceSession:
                 if event is not None:
                     if frame.protocol == PROTO_ALARM:
                         event.event_type = "alarm"
+                    if event.ignition is not None:
+                        self.ignition = event.ignition
                     publishes.append(self._publish(event))
                 acks.append(frame)
 
@@ -141,8 +182,13 @@ class DeviceSession:
                 log.debug("Heartbeat from %s", self.device_id)
                 status = decode_heartbeat(frame.content, self.device_id) if self.device_id else None
                 if status is not None:
+                    self.ignition = status.ignition
                     publishes.append(self._publish_status(status))
                 acks.append(frame)
+
+            elif frame.protocol in (PROTO_COMMAND_REPLY, PROTO_COMMAND_REPLY_NEW):
+                if self.device_id:
+                    publishes.append(self._command_replied(frame))
 
             else:
                 log.debug("Unhandled protocol 0x%02X from %s", frame.protocol, self.device_id)
@@ -153,6 +199,94 @@ class DeviceSession:
             for frame in acks:
                 writer.write(build_ack(frame.protocol, frame.serial))
             await writer.drain()
+        if logged_in:
+            # Anything queued while this tracker was offline.
+            self.schedule_delivery()
+
+    # --- commands -------------------------------------------------------
+
+    def schedule_delivery(self) -> None:
+        """Check for commands in the background; the reader loop never waits."""
+        if not self.device_id or self.writer is None:
+            return
+        task = asyncio.create_task(self.deliver_commands())
+        self._delivery_tasks.add(task)
+        task.add_done_callback(self._delivery_tasks.discard)
+
+    async def deliver_commands(self) -> None:
+        """
+        Claim this tracker's commands and send them. The database already
+        refused any cut while device_status says the ignition is not off; a
+        heartbeat on this very connection saying it is on refuses it too.
+        """
+        async with self._delivery_lock:
+            device_id, writer = self.device_id, self.writer
+            if not device_id or writer is None:
+                return
+            try:
+                pending = await self.commands.claim(device_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Could not claim commands for %s", device_id)
+                return
+            for command in pending:
+                if command.action == "cut" and self.ignition:
+                    log.warning("Not cutting %s: ignition is on (command %d)", device_id, command.id)
+                    await self._complete(command.id, ok=False, error="ignition_on")
+                    continue
+                self._out_serial = (self._out_serial + 1) & 0xFFFF
+                try:
+                    writer.write(build_command(self._out_serial, command.id, command.command))
+                    await writer.drain()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    log.warning("Connection lost sending command %d to %s", command.id, device_id)
+                    await self._complete(command.id, ok=False, error="connection_lost")
+                    continue
+                log.info("Sent %r to %s (command %d)", command.command, device_id, command.id)
+                loop = asyncio.get_running_loop()
+                self._awaiting[command.id] = loop.call_later(
+                    self.config.command_reply_timeout_s, self._reply_timed_out, command.id
+                )
+
+    def _reply_timed_out(self, command_id: int) -> None:
+        if self._awaiting.pop(command_id, None) is not None:
+            log.warning("No reply from %s to command %d", self.device_id, command_id)
+            task = asyncio.create_task(self._complete(command_id, ok=False, error="no_reply"))
+            self._delivery_tasks.add(task)
+            task.add_done_callback(self._delivery_tasks.discard)
+
+    async def _command_replied(self, frame: Frame) -> None:
+        reply = decode_command_reply(frame.protocol, frame.content)
+        if reply is None:
+            log.warning("Unreadable command reply from %s", self.device_id)
+            return
+        timer = self._awaiting.pop(reply.server_flag, None)
+        if timer is not None:
+            timer.cancel()
+        failed = reply_is_failure(reply.text)
+        log.info(
+            "Reply from %s to command %d: %r", self.device_id, reply.server_flag, reply.text
+        )
+        # Completed even when not awaited here (a late answer after
+        # 'no_reply'): the database only accepts it for this device's own
+        # command, still waiting on an answer.
+        await self._complete(
+            reply.server_flag,
+            ok=not failed,
+            reply=reply.text,
+            error="tracker_reported_failure" if failed else None,
+        )
+
+    async def _complete(self, command_id: int, *, ok: bool, reply=None, error=None) -> None:
+        try:
+            await self.commands.complete(
+                command_id, self.device_id, ok=ok, reply=reply, error=error
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Could not record the outcome of command %d", command_id)
 
     async def _publish(self, event: LocationEvent) -> None:
         """A sink outage must not kill the device connection."""
@@ -197,13 +331,22 @@ def _log_startup_banner(server: asyncio.AbstractServer, config: Config) -> None:
     log.info("=" * 72)
 
 
-async def serve(config: Config | None = None, sink: Sink | None = None) -> None:
+async def serve(
+    config: Config | None = None,
+    sink: Sink | None = None,
+    commands: CommandQueue | None = None,
+) -> None:
     config = config or Config.from_env()
     sink = sink or build_sink(config)
+    commands = commands or build_command_queue(
+        config.sink, config.pg_dsn, config.pg_statement_cache_size
+    )
+    registry = SessionRegistry()
     await sink.start()
+    await commands.start(registry.notify, registry.notify_all)
 
     async def client_connected(reader, writer):
-        await DeviceSession(sink, config).handle(reader, writer)
+        await DeviceSession(sink, config, commands, registry).handle(reader, writer)
 
     server = await asyncio.start_server(client_connected, config.host, config.port)
     _log_startup_banner(server, config)
@@ -212,6 +355,7 @@ async def serve(config: Config | None = None, sink: Sink | None = None) -> None:
         async with server:
             await server.serve_forever()
     finally:
+        await commands.stop()
         await sink.stop()
 
 
