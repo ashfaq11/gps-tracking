@@ -1,5 +1,5 @@
 # GPS Tracking Platform
-
+ 
 Two processes over one Postgres database:
 
 | Component | What it is | Entry point |
