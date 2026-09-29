@@ -541,4 +541,4 @@ dependencies.
    each device's rows in arrival order; scale out with more gateway
    processes, not more flushers.
 5. **TLS** — cheap trackers rarely support it, so the gateway listens on plain
-   TCP. Positions and IMEIs travel unencrypted.
+   TCP. Positions and IMEIs travel unencrypted. 
