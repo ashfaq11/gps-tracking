@@ -4,6 +4,10 @@ import os
 from dataclasses import dataclass, field
 
 
+# Log files are never kept longer than this, whatever the environment says.
+MAX_LOG_RETENTION_DAYS = 30
+
+
 @dataclass(frozen=True)
 class ApiConfig:
     host: str = "127.0.0.1"
@@ -45,6 +49,11 @@ class ApiConfig:
     # when connecting through one.
     pg_statement_cache_size: int = 100
     cors_origins: list[str] = field(default_factory=list)
+    # `python -m api` also logs to <log_dir>/api.log, rotated at midnight and
+    # deleted once older than log_retention_days (at most 30). Empty
+    # disables the file (console only).
+    log_dir: str = "logs"
+    log_retention_days: int = 30
 
     @classmethod
     def from_env(cls, env=None) -> "ApiConfig":
@@ -64,6 +73,11 @@ class ApiConfig:
             vapid_private_key=env.get("VAPID_PRIVATE_KEY") or None,
             vapid_subject=env.get("VAPID_SUBJECT", cls.vapid_subject),
             slow_request_ms=float(env.get("API_SLOW_REQUEST_MS", cls.slow_request_ms)),
+            log_dir=env.get("API_LOG_DIR", cls.log_dir),
+            log_retention_days=min(
+                MAX_LOG_RETENTION_DAYS,
+                max(1, int(env.get("API_LOG_RETENTION_DAYS", cls.log_retention_days))),
+            ),
             pg_pool_min=int(env.get("PG_POOL_MIN", cls.pg_pool_min)),
             pg_pool_max=int(env.get("PG_POOL_MAX", cls.pg_pool_max)),
             pg_statement_cache_size=int(

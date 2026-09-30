@@ -117,6 +117,27 @@ docker compose -f deploy/aws/docker-compose.yml --env-file /etc/gps-tracking.env
 docker compose -f deploy/aws/docker-compose.yml --env-file /etc/gps-tracking.env logs -f api
 ```
 
+**Log files** (IST timestamps, rotated at midnight, kept 30 days -- older
+files are deleted automatically) live in the `gps-logs` volume, mounted at
+`/app/logs` in both containers:
+
+| File | What |
+|---|---|
+| `gateway-messages.log` | every packet a tracker sent, one readable line each: login, location (with a map link), heartbeat (ignition, battery, GSM), alarm, command replies -- plus commands sent and refused logins |
+| `gateway.log` | the gateway's own log: connections, warnings, errors |
+| `api.log` | the API's log, each line tagged with its request id |
+
+```bash
+C="docker compose -f deploy/aws/docker-compose.yml --env-file /etc/gps-tracking.env"
+$C exec gateway tail -f logs/gateway-messages.log              # live
+$C exec gateway grep 868720065896205 logs/gateway-messages.log  # one tracker, today
+$C exec gateway ls logs                                         # older days: *.log.YYYY-MM-DD
+$C exec api tail -f logs/api.log
+```
+
+Set `GATEWAY_MESSAGE_LOG_RAW=1` in the env file to add each packet's raw hex
+to its line, when a new tracker model needs checking byte by byte.
+
 **Roll back:** check out an earlier commit and deploy it as it is.
 
 ```bash

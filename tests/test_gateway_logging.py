@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from gps_gateway.config import Config
-from gps_gateway.logging_setup import LOG_FILE_NAME, configure_logging
+from gps_gateway.logging_setup import LOG_FILE_NAME, MESSAGE_LOGGER, configure_logging
 
 
 class TestGatewayLogging(unittest.TestCase):
@@ -13,21 +13,29 @@ class TestGatewayLogging(unittest.TestCase):
         self.root = logging.getLogger()
         self._saved = (self.root.handlers[:], self.root.level)
         self.root.handlers = []
+        # configure_logging also gives the per-packet logger its own file.
+        self.messages = logging.getLogger(MESSAGE_LOGGER)
+        self._saved_messages = (self.messages.handlers[:], self.messages.propagate)
+        self.messages.handlers = []
 
     def tearDown(self):
-        for handler in self.root.handlers:
+        for handler in self.root.handlers + self.messages.handlers:
             handler.close()
         self.root.handlers, self.root.level = self._saved
+        self.messages.handlers, self.messages.propagate = self._saved_messages
+        self.messages.disabled = False
 
     def _file_handlers(self):
         return [
-            h for h in self.root.handlers if isinstance(h, logging.handlers.TimedRotatingFileHandler)
+            h
+            for h in self.root.handlers
+            if isinstance(h, logging.handlers.TimedRotatingFileHandler)
         ]
 
-    def test_defaults_keep_two_weeks(self):
+    def test_defaults_keep_thirty_days(self):
         config = Config.from_env({})
         self.assertEqual(config.log_dir, "logs")
-        self.assertEqual(config.log_retention_days, 14)
+        self.assertEqual(config.log_retention_days, 30)
 
     def test_retention_is_never_below_one_day(self):
         self.assertEqual(Config.from_env({"GATEWAY_LOG_RETENTION_DAYS": "0"}).log_retention_days, 1)

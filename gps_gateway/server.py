@@ -15,6 +15,7 @@ from .commands import (
 )
 from .config import Config
 from .logging_setup import configure_logging
+from .message_log import log_event, log_inbound
 from .models import LocationEvent, StatusEvent
 from .protocol import (
     PROTO_ALARM,
@@ -37,6 +38,11 @@ from .protocol.framing import Frame, FrameDecoder
 from .sinks import Sink, build_sink
 
 log = logging.getLogger(__name__)
+
+
+def _peer_text(peer) -> str:
+    return f"{peer[0]}:{peer[1]}" if isinstance(peer, tuple) else str(peer)
+
 
 _READ_SIZE = 4096
 
@@ -80,6 +86,7 @@ class DeviceSession(Deliverable):
         self.writer = writer
         peer = writer.get_extra_info("peername")
         log.info("Connection opened from %s", peer)
+        log_event("CONN", _peer_text(peer), "OPEN", "tracker connected")
         try:
             while True:
                 try:
@@ -113,6 +120,12 @@ class DeviceSession(Deliverable):
                 peer,
                 self.decoder.dropped_frames,
             )
+            log_event(
+                "CONN",
+                self.device_id or _peer_text(peer),
+                "CLOSED",
+                f"from {_peer_text(peer)}, {self.decoder.dropped_frames} unreadable frame(s)",
+            )
 
     @staticmethod
     async def _close(writer: asyncio.StreamWriter) -> None:
@@ -140,24 +153,26 @@ class DeviceSession(Deliverable):
         acks: list[Frame] = []
         publishes = []
         logged_in = False
+        peer_text = _peer_text(writer.get_extra_info("peername"))
         for frame in frames:
+            log_inbound(frame, self.device_id, peer_text, raw=self.config.message_log_raw)
             if frame.protocol == PROTO_LOGIN:
                 device_id = decode_login(frame.content)
                 if device_id is None:
                     log.warning("Rejecting unreadable login packet")
                     continue
-                peer = writer.get_extra_info("peername")
-                peer_text = f"{peer[0]}:{peer[1]}" if isinstance(peer, tuple) else str(peer)
                 if not await self.admission.admit(device_id, peer_text):
                     # No ACK: the tracker never counts as connected, and the
                     # connection closes once this read is done.
                     log.warning("Refused login from unknown device %s (%s)", device_id, peer_text)
+                    log_event("OUT", device_id, "REFUSED", "not on the tracker allowlist")
                     self.refused = True
                     continue
                 if self.registry is not None and self.device_id and self.device_id != device_id:
                     self.registry.remove(self.device_id, self)
                 self.device_id = device_id
                 log.info("Device logged in: %s", self.device_id)
+                log_event("OUT", device_id, "LOGIN OK", f"accepted from {peer_text}")
                 if self.registry is not None:
                     self.registry.add(device_id, self)
                 logged_in = True
@@ -250,6 +265,9 @@ class DeviceSession(Deliverable):
             for command in pending:
                 if command.action == "cut" and self.ignition:
                     log.warning("Not cutting %s: ignition is on (command %d)", device_id, command.id)
+                    log_event(
+                        "OUT", device_id, "COMMAND", f"NOT sent {command.command!r}: ignition on"
+                    )
                     await self._complete(command.id, ok=False, error="ignition_on")
                     continue
                 self._out_serial = (self._out_serial + 1) & 0xFFFF
@@ -261,6 +279,9 @@ class DeviceSession(Deliverable):
                     await self._complete(command.id, ok=False, error="connection_lost")
                     continue
                 log.info("Sent %r to %s (command %d)", command.command, device_id, command.id)
+                log_event(
+                    "OUT", device_id, "COMMAND", f"{command.command!r} (command {command.id})"
+                )
                 loop = asyncio.get_running_loop()
                 self._awaiting[command.id] = loop.call_later(
                     self.config.command_reply_timeout_s, self._reply_timed_out, command.id
@@ -269,6 +290,7 @@ class DeviceSession(Deliverable):
     def _reply_timed_out(self, command_id: int) -> None:
         if self._awaiting.pop(command_id, None) is not None:
             log.warning("No reply from %s to command %d", self.device_id, command_id)
+            log_event("--", self.device_id or "?", "NO REPLY", f"to command {command_id}")
             task = asyncio.create_task(self._complete(command_id, ok=False, error="no_reply"))
             self._delivery_tasks.add(task)
             task.add_done_callback(self._delivery_tasks.discard)

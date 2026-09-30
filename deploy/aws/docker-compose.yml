@@ -13,6 +13,12 @@ x-common: &common
   # host.docker.internal -- inside a container, localhost is the container.
   extra_hosts:
     - "host.docker.internal:host-gateway"
+  # api.log, gateway.log and gateway-messages.log (one readable line per
+  # tracker packet), rotated daily and kept 30 days by the apps themselves.
+  # A named volume survives redeploys; read them with, e.g.
+  #   docker compose ... exec gateway tail -f logs/gateway-messages.log
+  volumes:
+    - gps-logs:/app/logs
   logging:
     driver: json-file
     options:
@@ -64,3 +70,6 @@ services:
     # interpolated here, so the password never shows in `docker inspect`
     # args or the process list.
     entrypoint: ["sh", "-c", 'psql "$$PG_DSN" -v ON_ERROR_STOP=1 -q -f /sql/schema.sql']
+
+volumes:
+  gps-logs:
