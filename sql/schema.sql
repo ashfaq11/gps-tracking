@@ -775,7 +775,7 @@ $grant_geofences$;
 CREATE TABLE IF NOT EXISTS device_commands (
     id           BIGSERIAL PRIMARY KEY,
     device_id    TEXT        NOT NULL,
-    action       TEXT        NOT NULL CHECK (action IN ('cut', 'restore')),
+    action       TEXT        NOT NULL CHECK (action IN ('cut', 'restore', 'timer', 'param')),
     -- The exact text sent to the tracker.
     command      TEXT        NOT NULL,
     status       TEXT        NOT NULL DEFAULT 'queued' CHECK (status IN (
@@ -790,6 +790,13 @@ CREATE TABLE IF NOT EXISTS device_commands (
     -- Why it did not go through: 'ignition_on', 'no_reply', ...
     error        TEXT
 );
+
+-- Tracker settings share the queue: 'timer' (TIMER,T1,T2#, the upload
+-- interval) and 'param' (PARAM#, which answers with the current settings).
+-- Widened here for databases created when only cut/restore existed.
+ALTER TABLE device_commands DROP CONSTRAINT IF EXISTS device_commands_action_check;
+ALTER TABLE device_commands ADD CONSTRAINT device_commands_action_check
+    CHECK (action IN ('cut', 'restore', 'timer', 'param'));
 
 CREATE INDEX IF NOT EXISTS device_commands_device_idx
     ON device_commands (device_id, id DESC);
