@@ -1,6 +1,7 @@
 """
-Device commands: engine cut-off and restore, sent over the tracker's own
-connection by the gateway.
+Device commands: engine cut-off and restore, and tracker settings (upload
+interval, reading the settings back), sent over the tracker's own connection
+by the gateway.
 
 The API only queues a command here. Delivery, and the safety rules that must
 hold at the moment of delivery (cut only while the ignition is off, expiry,
@@ -17,10 +18,31 @@ from .schemas import DeviceCommandOut, RelayStateOut
 # The PT06 LITE manual's SMS commands; GT06-family trackers accept the same
 # text over their GPRS connection as a 0x80 packet.
 RELAY_COMMANDS = {"cut": "RELAY,1#", "restore": "RELAY,0#"}
+RELAY_ACTIONS = ("cut", "restore")
+# Settings commands: `timer` is TIMER,T1,T2# (built from the request),
+# `param` is PARAM#, whose reply lists the tracker's current settings.
+TRACKER_ACTIONS = ("timer", "param")
+PARAM_COMMAND = "PARAM#"
+
+
+def timer_command(moving_s: int, parked_s: int) -> str:
+    return f"TIMER,{moving_s},{parked_s}#"
 
 # How long a command may wait for the tracker to come online. Past this it is
 # never delivered: nobody expects an engine to stop hours after they asked.
 COMMAND_TTL = timedelta(minutes=5)
+# A settings change is harmless whenever it lands, so it may wait for a
+# tracker that is offline (or parked, reporting every T2) far longer.
+SETTINGS_TTL = timedelta(days=1)
+
+
+def _group(action: str) -> tuple[str, ...]:
+    """What a new command supersedes while still queued: a cut or restore
+    replaces either (the newest intent for the relay wins); a settings
+    command replaces only its own action -- changing the upload interval
+    must not cancel a waiting engine restore, and reading the settings must
+    not cancel a waiting interval change."""
+    return RELAY_ACTIONS if action in RELAY_ACTIONS else (action,)
 
 
 class CommandRepository(Protocol):
@@ -32,8 +54,23 @@ class CommandRepository(Protocol):
         users by `requested_by` instead)."""
         ...
 
-    async def list_commands(self, device_id: str, limit: int = 20) -> list[DeviceCommandOut]:
-        """Newest first. A queued command past its expiry reads as expired."""
+    async def create_tracker_command(
+        self,
+        device_id: str,
+        action: str,
+        command: str,
+        requested_by: int | None,
+        requester: str | None = None,
+    ) -> DeviceCommandOut:
+        """Queue a settings command (TRACKER_ACTIONS), superseding a
+        still-queued one of the same action for the device."""
+        ...
+
+    async def list_commands(
+        self, device_id: str, limit: int = 20, actions: tuple[str, ...] | None = None
+    ) -> list[DeviceCommandOut]:
+        """Newest first, optionally only these actions. A queued command past
+        its expiry reads as expired."""
         ...
 
     async def relay_state(self, device_id: str, limit: int = 5) -> RelayStateOut:
@@ -68,7 +105,7 @@ class InMemoryCommandRepository:
             enabled=enabled,
             changed_at=changed_at,
             changed_by=changed_by,
-            commands=await self.list_commands(device_id, limit),
+            commands=await self.list_commands(device_id, limit, RELAY_ACTIONS),
         )
 
     async def set_relay_enabled(
@@ -93,10 +130,29 @@ class InMemoryCommandRepository:
     async def create_relay_command(
         self, device_id: str, action: str, requested_by: int | None, requester: str | None = None
     ) -> DeviceCommandOut:
+        return self._create(device_id, action, RELAY_COMMANDS[action], COMMAND_TTL, requester)
+
+    async def create_tracker_command(
+        self,
+        device_id: str,
+        action: str,
+        command: str,
+        requested_by: int | None,
+        requester: str | None = None,
+    ) -> DeviceCommandOut:
+        return self._create(device_id, action, command, SETTINGS_TTL, requester)
+
+    def _create(
+        self, device_id: str, action: str, text: str, ttl: timedelta, requester: str | None
+    ) -> DeviceCommandOut:
         now = datetime.now(timezone.utc)
+        group = _group(action)
         self._commands = [
             c.model_copy(update={"status": "superseded", "completed_at": now})
-            if c.device_id == device_id and c.status == "queued" and c.expires_at > now
+            if c.device_id == device_id
+            and c.action in group
+            and c.status == "queued"
+            and c.expires_at > now
             else c
             for c in self._commands
         ]
@@ -104,19 +160,25 @@ class InMemoryCommandRepository:
             id=self._next_id,
             device_id=device_id,
             action=action,
-            command=RELAY_COMMANDS[action],
+            command=text,
             status="queued",
             requested_by=requester,
             requested_at=now,
-            expires_at=now + COMMAND_TTL,
+            expires_at=now + ttl,
         )
         self._next_id += 1
         self._commands.append(command)
         return command
 
-    async def list_commands(self, device_id: str, limit: int = 20) -> list[DeviceCommandOut]:
+    async def list_commands(
+        self, device_id: str, limit: int = 20, actions: tuple[str, ...] | None = None
+    ) -> list[DeviceCommandOut]:
         now = datetime.now(timezone.utc)
-        mine = [c for c in self._commands if c.device_id == device_id]
+        mine = [
+            c
+            for c in self._commands
+            if c.device_id == device_id and (actions is None or c.action in actions)
+        ]
         return [_effective(c, now) for c in sorted(mine, key=lambda c: -c.id)[:limit]]
 
     def set_status(self, command_id: int, **changes) -> None:
@@ -142,6 +204,23 @@ class PostgresCommandRepository:
     async def create_relay_command(
         self, device_id: str, action: str, requested_by: int | None, requester: str | None = None
     ) -> DeviceCommandOut:
+        return await self._create(
+            device_id, action, RELAY_COMMANDS[action], COMMAND_TTL, requested_by
+        )
+
+    async def create_tracker_command(
+        self,
+        device_id: str,
+        action: str,
+        command: str,
+        requested_by: int | None,
+        requester: str | None = None,
+    ) -> DeviceCommandOut:
+        return await self._create(device_id, action, command, SETTINGS_TTL, requested_by)
+
+    async def _create(
+        self, device_id: str, action: str, text: str, ttl: timedelta, requested_by: int | None
+    ) -> DeviceCommandOut:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -149,8 +228,10 @@ class PostgresCommandRepository:
                     UPDATE device_commands
                     SET status = 'superseded', completed_at = now()
                     WHERE device_id = $1 AND status = 'queued' AND expires_at > now()
+                      AND action = ANY($2::text[])
                     """,
                     device_id,
+                    list(_group(action)),
                 )
                 command_id = await conn.fetchval(
                     """
@@ -161,9 +242,9 @@ class PostgresCommandRepository:
                     """,
                     device_id,
                     action,
-                    RELAY_COMMANDS[action],
+                    text,
                     requested_by,
-                    COMMAND_TTL,
+                    ttl,
                 )
                 row = await conn.fetchrow(
                     f"""
@@ -190,7 +271,7 @@ class PostgresCommandRepository:
             enabled=bool(row and row["enabled"]),
             changed_at=row["changed_at"] if row else None,
             changed_by=row["changed_by"] if row else None,
-            commands=await self.list_commands(device_id, limit),
+            commands=await self.list_commands(device_id, limit, RELAY_ACTIONS),
         )
 
     async def set_relay_enabled(
@@ -222,17 +303,20 @@ class PostgresCommandRepository:
                     )
         return await self.relay_state(device_id)
 
-    async def list_commands(self, device_id: str, limit: int = 20) -> list[DeviceCommandOut]:
+    async def list_commands(
+        self, device_id: str, limit: int = 20, actions: tuple[str, ...] | None = None
+    ) -> list[DeviceCommandOut]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""
                 SELECT {_COLUMNS}
                 FROM device_commands c LEFT JOIN users u ON u.id = c.requested_by
-                WHERE c.device_id = $1
+                WHERE c.device_id = $1 AND ($3::text[] IS NULL OR c.action = ANY($3::text[]))
                 ORDER BY c.id DESC
                 LIMIT $2
                 """,
                 device_id,
                 limit,
+                list(actions) if actions is not None else None,
             )
         return [DeviceCommandOut(**dict(r)) for r in rows]

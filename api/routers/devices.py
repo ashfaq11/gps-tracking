@@ -3,7 +3,12 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..config import ApiConfig
-from ..commands_repository import CommandRepository
+from ..commands_repository import (
+    PARAM_COMMAND,
+    TRACKER_ACTIONS,
+    CommandRepository,
+    timer_command,
+)
 from ..deps import (
     current_user,
     get_commands,
@@ -18,6 +23,8 @@ from ..schemas import (
     RelayCommandIn,
     RelayEnabledIn,
     RelayStateOut,
+    TrackerIntervalIn,
+    TrackerStateOut,
     DeviceClaimRequest,
     DeviceLocationBySecretCode,
     DeviceOut,
@@ -565,6 +572,74 @@ async def set_relay_enabled(
     """
     return await commands.set_relay_enabled(
         device_id, payload.enabled, admin.id, requester=admin.username
+    )
+
+
+# --- tracker settings ---
+
+
+@router.get(
+    "/{device_id}/tracker",
+    response_model=TrackerStateOut,
+    dependencies=[Depends(require_admin)],
+    summary="Settings commands sent to a tracker, and what it answered",
+)
+async def tracker_state(
+    device_id: str,
+    limit: int = Query(5, ge=0, le=100),
+    commands: CommandRepository = Depends(get_commands),
+) -> TrackerStateOut:
+    """One call for the dashboard's Tracker settings panel. The newest
+    confirmed `param` reply is the tracker's own list of its settings."""
+    return TrackerStateOut(
+        device_id=device_id,
+        commands=await commands.list_commands(device_id, limit, TRACKER_ACTIONS),
+    )
+
+
+@router.post(
+    "/{device_id}/tracker/interval",
+    response_model=DeviceCommandOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Set how often the tracker sends its position (TIMER,T1,T2#)",
+)
+async def set_tracker_interval(
+    device_id: str,
+    payload: TrackerIntervalIn,
+    admin: AuthenticatedUser = Depends(require_admin),
+    commands: CommandRepository = Depends(get_commands),
+) -> DeviceCommandOut:
+    """
+    Queue the PT06 manual's `TIMER,T1,T2#`. A shorter moving interval puts a
+    real position inside more corners, so the history route follows the road
+    instead of cutting straight across. Admins only; waits up to a day for the
+    tracker to come online, and a newer interval replaces one still waiting
+    (a queued engine command or settings read is left alone).
+    """
+    return await commands.create_tracker_command(
+        device_id,
+        "timer",
+        timer_command(payload.moving_s, payload.parked_s),
+        admin.id,
+        requester=admin.username,
+    )
+
+
+@router.post(
+    "/{device_id}/tracker/params",
+    response_model=DeviceCommandOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Ask the tracker for its current settings (PARAM#)",
+)
+async def read_tracker_params(
+    device_id: str,
+    admin: AuthenticatedUser = Depends(require_admin),
+    commands: CommandRepository = Depends(get_commands),
+) -> DeviceCommandOut:
+    """Queue `PARAM#`; the tracker's answer lands in the command's `reply`
+    (see GET /devices/{device_id}/tracker)."""
+    return await commands.create_tracker_command(
+        device_id, "param", PARAM_COMMAND, admin.id, requester=admin.username
     )
 
 

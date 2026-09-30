@@ -882,6 +882,8 @@ class GeofenceReport(BaseModel):
 # --- device commands (engine cut-off) ---
 
 RelayAction = Literal["cut", "restore"]
+# Tracker settings: `timer` sets the upload interval, `param` reads the settings back.
+TrackerAction = Literal["timer", "param"]
 CommandStatus = Literal["queued", "sent", "confirmed", "failed", "expired", "superseded"]
 
 
@@ -899,7 +901,7 @@ class DeviceCommandOut(BaseModel):
 
     id: int
     device_id: str
-    action: RelayAction
+    action: RelayAction | TrackerAction
     command: str = Field(description='The exact text sent to the tracker, e.g. "RELAY,1#".')
     status: CommandStatus = Field(
         description=(
@@ -954,6 +956,31 @@ class LoginAttemptOut(BaseModel):
     last_seen: datetime
     attempts: int
     last_peer: str | None = Field(default=None, description="ip:port of the newest attempt.")
+
+
+class TrackerIntervalIn(BaseModel):
+    """The PT06 manual's `TIMER,T1,T2#`, with the manual's own limits."""
+
+    moving_s: int = Field(
+        ge=5,
+        le=18000,
+        description=(
+            "Seconds between positions while the ignition is on (T1). Shorter means corners "
+            "are drawn from real points instead of a straight line across them; 10 is a good "
+            "value for city driving."
+        ),
+    )
+    parked_s: int = Field(
+        ge=300, le=18000, description="Seconds between positions while the ignition is off (T2)."
+    )
+
+
+class TrackerStateOut(BaseModel):
+    """Settings commands sent to a tracker, newest first -- a `param` reply is
+    the tracker's own report of its current settings."""
+
+    device_id: str
+    commands: list[DeviceCommandOut] = Field(default_factory=list, description="Newest first.")
 
 
 class RelayEnabledIn(BaseModel):
