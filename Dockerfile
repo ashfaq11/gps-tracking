@@ -15,7 +15,8 @@ COPY gps_gateway/ ./gps_gateway/
 COPY sql/ ./sql/
 
 # Run as a non-root user: this process is exposed directly to the internet.
-RUN useradd --create-home --uid 10001 gateway
+RUN useradd --create-home --uid 10001 gateway \
+    && mkdir -p /app/logs && chown gateway /app/logs
 USER gateway
 
 EXPOSE 5023

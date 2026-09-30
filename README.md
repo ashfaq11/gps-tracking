@@ -294,15 +294,32 @@ error", "request_id": "..."}` — internal detail never reaches the response.
 including logs from application code, and disables uvicorn's own access log
 since `api.access` supersedes it.
 
-### Gateway log file
+### Log files
 
-The gateway also writes everything it logs to `logs/gateway.log` (relative to
-the working directory; override with `GATEWAY_LOG_DIR`). The file rolls over
-at local midnight to `gateway.log.YYYY-MM-DD`, and rotated files beyond
-`GATEWAY_LOG_RETENTION_DAYS` (default 14, i.e. two weeks) are deleted at each
-rollover, so no cron job or logrotate is needed. If the directory cannot be
-written, the gateway logs a warning and carries on with console output only.
-The API does not write a log file.
+Both processes write log files under `logs/` (relative to the working
+directory; override with `GATEWAY_LOG_DIR` / `API_LOG_DIR`, empty for console
+only). Timestamps in the files are IST.
+
+| File | Written by | What |
+|---|---|---|
+| `gateway-messages.log` | gateway | every packet a tracker sends, one human-readable line each (login, location with a map link, heartbeat with ignition/battery/GSM, alarm, cell-only position, command reply, unknown packets as hex), plus commands sent and refused logins |
+| `gateway.log` | gateway | everything else the gateway logs |
+| `api.log` | `python -m api` | the API's log, each line tagged with its request id |
+
+```
+2026-09-30 11:25:32 IST IN   868720065896205  LOCATION   #0042  fixed 2026-09-30 11:25:30 IST · 12.971234, 77.594321 · 44 km/h · heading 267° W · 9 satellites · GPS lock · cell 404/45/1234/56789 · map https://maps.google.com/?q=12.971234,77.594321
+2026-09-30 11:26:02 IST IN   868720065896205  HEARTBEAT  #0043  ignition ON · GPS tracking on · charging · battery medium (4/6) · GSM good (3/4)
+2026-09-30 11:27:10 IST OUT  868720065896205  COMMAND           'TIMER,10,3600#' (command 17)
+```
+
+Each file rolls over at midnight to `<name>.YYYY-MM-DD`, and rotated files
+older than `GATEWAY_LOG_RETENTION_DAYS` / `API_LOG_RETENTION_DAYS` (default
+30, and never more than 30) are deleted at each rollover -- no cron job or
+logrotate needed. If a directory cannot be written, the process logs a
+warning and carries on with console output only. The message log is on by
+default (`GATEWAY_MESSAGE_LOG=off` to stop it); `GATEWAY_MESSAGE_LOG_RAW=1`
+adds each packet's raw hex, for checking a new tracker model byte by byte.
+On Vercel the API has no writable log directory and logs to the console.
 
 ## Swagger / OpenAPI
 
@@ -472,8 +489,12 @@ is the safe setting.
 | `GATEWAY_BATCH_SIZE` | `500` | gateway, max fixes per database write (one `COPY`); `1` turns batching off and ACKs only after each write |
 | `GATEWAY_FLUSH_INTERVAL` | `10` | gateway, seconds a partial batch waits before it is written — devices are ACKed on queueing, so this is also the live-map lag and what a crash can lose |
 | `GATEWAY_QUEUE_MAX` | `10000` | gateway, fixes waiting to be written before sessions stop reading their sockets |
-| `GATEWAY_LOG_DIR` | `logs` | gateway, directory for `gateway.log`; set empty to log to the console only |
-| `GATEWAY_LOG_RETENTION_DAYS` | `14` | gateway, days of rotated log files kept |
+| `GATEWAY_LOG_DIR` | `logs` | gateway, directory for `gateway.log` and `gateway-messages.log`; set empty to log to the console only |
+| `GATEWAY_LOG_RETENTION_DAYS` | `30` | gateway, days of rotated log files kept (at most 30) |
+| `GATEWAY_MESSAGE_LOG` | `on` | gateway, one readable line per tracker packet in `gateway-messages.log` |
+| `GATEWAY_MESSAGE_LOG_RAW` | `off` | gateway, also append each packet's raw hex |
+| `API_LOG_DIR` | `logs` | api (`python -m api`), directory for `api.log`; empty for console only |
+| `API_LOG_RETENTION_DAYS` | `30` | api, days of rotated log files kept (at most 30) |
 | `PG_DSN` | `postgresql://user:pass@localhost:5432/gps` | both |
 | `API_HOST` / `API_PORT` | `127.0.0.1` / `55920` | api |
 | `API_BACKEND` | `postgres` | api (`postgres` or `memory`) |

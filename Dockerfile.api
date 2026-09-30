@@ -20,7 +20,8 @@ RUN pip install --no-cache-dir -r requirements.txt "uvicorn[standard]>=0.27"
 COPY api/ ./api/
 
 # Same reasoning as the gateway image: this answers the internet directly.
-RUN useradd --create-home --uid 10001 api
+RUN useradd --create-home --uid 10001 api \
+    && mkdir -p /app/logs && chown api /app/logs
 USER api
 
 EXPOSE 8000
