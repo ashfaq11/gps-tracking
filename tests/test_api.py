@@ -744,6 +744,39 @@ class TestHaltedSince(ApiTestCase):
         self.assertEqual(row["halted_since"], moving_at)
         self.assertNotEqual(row["halted_since"], row["last_seen"])
 
+    async def _row(self):
+        listing = await self.client.get(f"{BASE}/devices", headers=self.auth())
+        return next(r for r in listing.json() if r["device_id"] == FIX["device_id"])
+
+    async def test_a_late_backlog_upload_does_not_read_as_moving_now(self):
+        # Parked and reporting live; then the tracker uploads a fix it took
+        # while still driving, 8 minutes ago, which arrives last.
+        now = datetime.now(timezone.utc)
+        a_minute_ago = (now - timedelta(minutes=1)).isoformat()
+        await self.ingest({**FIX, "speed_kmh": 0, "fixed_at": a_minute_ago})
+        await self.ingest({**FIX, "speed_kmh": 0, "fixed_at": now.isoformat()})
+        driven_at = now - timedelta(minutes=8)
+        await self.ingest({**FIX, "speed_kmh": 35, "fixed_at": driven_at.isoformat()})
+
+        latest = await self.client.get(
+            f"{BASE}/devices/{FIX['device_id']}/latest", headers=self.auth()
+        )
+        self.assertEqual(latest.json()["speed_kmh"], 0)
+        everyone = await self.client.get(f"{BASE}/devices/latest", headers=self.auth())
+        self.assertEqual(everyone.json()[FIX["device_id"]]["speed_kmh"], 0)
+        # Halted since it was driven -- not since the upload arrived.
+        row = await self._row()
+        self.assertEqual(datetime.fromisoformat(row["halted_since"]), driven_at)
+
+    async def test_a_fast_tracker_clock_never_puts_halted_since_in_the_future(self):
+        future = datetime.now(timezone.utc) + timedelta(hours=2)
+        await self.ingest({**FIX, "speed_kmh": 30, "fixed_at": future.isoformat()})
+        await self.ingest({**FIX, "speed_kmh": 0})
+        row = await self._row()
+        self.assertLessEqual(
+            datetime.fromisoformat(row["halted_since"]), datetime.now(timezone.utc)
+        )
+
     async def test_halted_since_is_null_for_no_history(self):
         listing = await self.client.get(f"{BASE}/devices", headers=self.auth())
         self.assertEqual(listing.json(), [])

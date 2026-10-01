@@ -192,7 +192,7 @@ class DeviceOut(BaseModel):
     halted_since: datetime | None = Field(
         default=None,
         description="When this device was last seen moving (speed_kmh > 0), or its very first "
-        "fix if it has never moved. Meaningful only when the latest fix reads 0 km/h -- a "
+        "fix if it has never moved -- by fix time (fixed_at, never later than received_at). Meaningful only when the latest fix reads 0 km/h -- a "
         "moving device's own halted_since is stale by definition and callers should ignore it. "
         "Derived from history, not client memory, so it is correct on a fresh page load and "
         "for a device nobody has been watching.",

@@ -44,6 +44,39 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# A tracker that loses signal keeps fixing and uploads the backlog on
+# reconnect, interleaved with live fixes -- up to ~9 minutes late on the GT06
+# units here. So the row *received* last is not always the newest position:
+# "latest" is the newest by fix time among rows received within this window
+# of the last one. Bounded so the query stays an index range scan.
+LATEST_REORDER_WINDOW = timedelta(minutes=15)
+
+# reports.fix_time in SQL: the tracker's clock unless it is plainly wrong
+# (more than CLOCK_AHEAD_LIMIT ahead of arrival, or CLOCK_BEHIND_LIMIT
+# behind -- a GT06 without a lock can report 2000-01-01), then arrival time.
+_AHEAD_S = int(CLOCK_AHEAD_LIMIT.total_seconds())
+_BEHIND_S = int(CLOCK_BEHIND_LIMIT.total_seconds())
+_FIX_TIME_SQL = (
+    "CASE WHEN {t}.fixed_at IS NULL"
+    f" OR {{t}}.fixed_at > {{t}}.received_at + interval '{_AHEAD_S} seconds'"
+    f" OR {{t}}.fixed_at < {{t}}.received_at - interval '{_BEHIND_S} seconds'"
+    " THEN {t}.received_at ELSE {t}.fixed_at END"
+)
+
+
+def _fix_time(row: LocationOut) -> datetime:
+    return fix_time(row.fixed_at, row.received_at)
+
+
+def _latest(rows: list[LocationOut]) -> LocationOut | None:
+    """In-memory twin of the Postgres latest queries (see LATEST_REORDER_WINDOW)."""
+    if not rows:
+        return None
+    newest = max(rows, key=lambda r: (r.received_at, r.id))
+    recent = [r for r in rows if r.received_at >= newest.received_at - LATEST_REORDER_WINDOW]
+    return max(recent, key=lambda r: (_fix_time(r), r.id))
+
+
 def _subscription_status(end_date: datetime | None, *, at: datetime | None = None) -> SubscriptionStatus:
     """No end date, or one still in the future, is active; a passed one is expired."""
     return "active" if (end_date is None or end_date > (at or _now())) else "expired"
@@ -57,8 +90,8 @@ def _halted_since(rows: list[LocationOut]) -> datetime | None:
     fix itself reads 0 km/h; computed regardless so the two backends agree
     on exactly the same value from exactly the same input.
     """
-    moving = [r.received_at for r in rows if (r.speed_kmh or 0) > 0]
-    return max(moving) if moving else min(r.received_at for r in rows)
+    moving = [_fix_time(r) for r in rows if (r.speed_kmh or 0) > 0]
+    return max(moving) if moving else min(_fix_time(r) for r in rows)
 
 
 class DeviceDetails(NamedTuple):
@@ -244,22 +277,19 @@ class InMemoryLocationRepository:
     async def latest_for_device(self, device_id: str) -> LocationOut | None:
         if not self._sub_active(device_id):
             return None
-        rows = [r for r in self._rows if r.device_id == device_id]
-        return max(rows, key=lambda r: (r.received_at, r.id)) if rows else None
+        return _latest([r for r in self._rows if r.device_id == device_id])
 
     async def latest_for_devices(
         self, device_ids: frozenset[str] | None = None
     ) -> dict[str, LocationOut]:
-        by_device: dict[str, LocationOut] = {}
+        rows_by_device: dict[str, list[LocationOut]] = {}
         for row in self._rows:
             if device_ids is not None and row.device_id not in device_ids:
                 continue
             if not self._sub_active(row.device_id):
                 continue
-            current = by_device.get(row.device_id)
-            if current is None or (row.received_at, row.id) > (current.received_at, current.id):
-                by_device[row.device_id] = row
-        return by_device
+            rows_by_device.setdefault(row.device_id, []).append(row)
+        return {device_id: _latest(rows) for device_id, rows in rows_by_device.items()}
 
     async def history_for_device(
         self, device_id: str, limit: int, since: datetime | None, until: datetime | None = None
@@ -529,18 +559,24 @@ class PostgresLocationRepository:
 
     async def latest_for_device(self, device_id: str) -> LocationOut | None:
         async with self._pool.acquire() as conn:
+            # The newest by fix time among the last LATEST_REORDER_WINDOW of
+            # arrivals -- see that constant for why not simply the newest row.
             row = await conn.fetchrow(
                 f"""
-                SELECT {_COLUMNS} FROM device_locations
-                WHERE device_id = $1
+                SELECT {_COLUMNS} FROM device_locations dl
+                WHERE dl.device_id = $1
+                  AND dl.received_at >= (
+                      SELECT MAX(received_at) FROM device_locations WHERE device_id = $1
+                  ) - $2::interval
                   AND NOT EXISTS (
                       SELECT 1 FROM device_subscriptions ds
                       WHERE ds.device_id = $1 AND ds.subscription_end_date <= now()
                   )
-                ORDER BY received_at DESC, id DESC
+                ORDER BY {_FIX_TIME_SQL.format(t="dl")} DESC, dl.id DESC
                 LIMIT 1
                 """,
                 device_id,
+                LATEST_REORDER_WINDOW,
             )
         return LocationOut(**dict(row)) if row else None
 
@@ -548,22 +584,34 @@ class PostgresLocationRepository:
         self, device_ids: frozenset[str] | None = None
     ) -> dict[str, LocationOut]:
         # DISTINCT ON (device_id), with the matching ORDER BY, is Postgres's
-        # per-group "top 1 row" -- one query and one pass of the
-        # (device_id, received_at DESC) index instead of N round trips
-        # through latest_for_device, one per device, the way a caller
-        # polling a whole fleet otherwise has to.
+        # per-group "top 1 row" -- one query instead of N round trips
+        # through latest_for_device. Two passes over the (device_id,
+        # received_at DESC) index: each device's newest arrival, then the
+        # newest by fix time among arrivals within LATEST_REORDER_WINDOW of
+        # it (a backlog upload must not pass for the current position).
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""
-                SELECT DISTINCT ON (dl.device_id) {_COLUMNS} FROM device_locations dl
-                WHERE ($1::text[] IS NULL OR dl.device_id = ANY($1))
-                  AND NOT EXISTS (
+                WITH newest AS (
+                    SELECT DISTINCT ON (device_id)
+                           device_id AS newest_device, received_at AS newest_at
+                    FROM device_locations
+                    WHERE ($1::text[] IS NULL OR device_id = ANY($1))
+                    ORDER BY device_id, received_at DESC, id DESC
+                )
+                SELECT DISTINCT ON (dl.device_id) {_COLUMNS}
+                FROM newest n
+                JOIN device_locations dl
+                  ON dl.device_id = n.newest_device
+                 AND dl.received_at >= n.newest_at - $2::interval
+                WHERE NOT EXISTS (
                       SELECT 1 FROM device_subscriptions ds
                       WHERE ds.device_id = dl.device_id AND ds.subscription_end_date <= now()
                   )
-                ORDER BY dl.device_id, dl.received_at DESC, dl.id DESC
+                ORDER BY dl.device_id, {_FIX_TIME_SQL.format(t="dl")} DESC, dl.id DESC
                 """,
                 list(device_ids) if device_ids is not None else None,
+                LATEST_REORDER_WINDOW,
             )
         return {row["device_id"]: LocationOut(**dict(row)) for row in rows}
 
@@ -595,9 +643,10 @@ class PostgresLocationRepository:
         return [LocationOut(**dict(r)) for r in rows]
 
     async def list_devices(self, device_ids: frozenset[str] | None = None) -> list[DeviceOut]:
+        fix_time_sql = _FIX_TIME_SQL.format(t="dl")
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT dl.device_id,
                        MAX(dl.received_at)                AS last_seen,
                        COUNT(*)                             AS fix_count,
@@ -609,9 +658,11 @@ class PostgresLocationRepository:
                        -- Last seen moving, or the very first fix if it has
                        -- never moved -- one aggregate alongside the others
                        -- already in this GROUP BY, not a second round trip.
+                       -- By fix time, so a late-uploaded backlog counts
+                       -- when it was driven, not when it arrived.
                        COALESCE(
-                           MAX(dl.received_at) FILTER (WHERE dl.speed_kmh > 0),
-                           MIN(dl.received_at)
+                           MAX({fix_time_sql}) FILTER (WHERE dl.speed_kmh > 0),
+                           MIN({fix_time_sql})
                        )                                     AS halted_since,
                        -- At most one device_status row per device, so these
                        -- aggregates only unwrap it for the GROUP BY.
