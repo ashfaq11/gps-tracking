@@ -196,5 +196,22 @@ class TestUnhandledException(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["detail"], "I am a teapot")
 
 
+class TestSecretsStayOutOfTheLog(LoggingTestCase):
+    """The live socket carries its login token in the URL; logs keep it masked."""
+
+    async def test_a_token_in_the_query_string_is_masked_in_the_access_log(self):
+        with self.assertLogs("api.access", level="INFO") as captured:
+            await self.client.get(f"{BASE}/ws/live?token=s3cret-token-value&x=1")
+        line = "\n".join(r.getMessage() for r in captured.records)
+        self.assertIn("token=***", line)
+        self.assertIn("x=1", line)
+        self.assertNotIn("s3cret-token-value", line)
+
+    async def test_a_plain_get_on_the_socket_path_says_it_needs_an_upgrade(self):
+        response = await self.client.get(f"{BASE}/ws/live?token=abc")
+        self.assertEqual(response.status_code, 426)
+        self.assertIn("WebSocket", response.json()["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

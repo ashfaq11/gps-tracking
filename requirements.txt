@@ -11,3 +11,10 @@ bcrypt>=4.1
 # which needs a long-running process and therefore never runs on Vercel --
 # but requirements.txt is shared with local/Docker deployments, where it does.
 pywebpush>=2.0
+# WebSocket support for the live-location socket (/api/v1/ws/live). Without a
+# WebSocket library uvicorn cannot upgrade the connection: it treats the
+# request as a plain GET, which matches no HTTP route and answers 404 --
+# the dashboard then retries every 30 s. The Docker image gets it through
+# uvicorn[standard]; a server deployed with `pip install -r requirements.txt`
+# gets it here.
+websockets>=12.0
