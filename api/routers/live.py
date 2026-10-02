@@ -16,7 +16,7 @@ WebSocket.
 
 import logging
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 
 from ..state import ensure_users
 from ..users_repository import AuthenticatedUser
@@ -27,6 +27,19 @@ router = APIRouter(tags=["live"])
 
 # Close codes in the 4000-4999 range are reserved for applications.
 _UNAUTHENTICATED = 4401
+
+
+@router.get("/ws/live", include_in_schema=False)
+async def live_location_without_upgrade() -> None:
+    """The same path reached as a plain HTTP request: the WebSocket upgrade
+    never happened. Said plainly rather than as a bare 404 -- either this
+    server has no WebSocket library (uvicorn needs `websockets`, see
+    requirements.txt) or a proxy in front of it dropped the Upgrade header."""
+    raise HTTPException(
+        status.HTTP_426_UPGRADE_REQUIRED,
+        detail="This is a WebSocket endpoint: connect with a WebSocket client. If one did, "
+        "the server lacks WebSocket support or a proxy dropped the upgrade.",
+    )
 
 
 def _scope(user: AuthenticatedUser) -> frozenset[str] | None:

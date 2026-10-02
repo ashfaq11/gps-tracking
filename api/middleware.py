@@ -30,6 +30,24 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
+# Query parameters whose values are credentials. The live socket has to
+# carry its login token in the URL (a browser WebSocket cannot set headers),
+# so it would otherwise be written to every access log line -- and log files
+# are kept for weeks.
+_SECRET_PARAMS = frozenset({"token", "access_token", "api_key", "key", "password"})
+
+
+def _redact(query: str) -> str:
+    """The query string with every secret parameter's value masked."""
+    if not query:
+        return query
+    parts = []
+    for part in query.split("&"):
+        name, sep, _value = part.partition("=")
+        parts.append(f"{name}=***" if sep and name.lower() in _SECRET_PARAMS else part)
+    return "&".join(parts)
+
+
 class RequestLoggingMiddleware:
     """
     Logs one line per request, after the response status is known.
@@ -104,8 +122,7 @@ class RequestLoggingMiddleware:
     @staticmethod
     def _describe(scope) -> str:
         path = scope["path"]
-        query = scope.get("query_string", b"").decode()
+        query = _redact(scope.get("query_string", b"").decode())
         client = scope.get("client")
         who = client[0] if client else "-"
-        # The API key travels in a header, so nothing secret is in the URL.
         return f"{who} {scope['method']} {path}{'?' + query if query else ''}"
