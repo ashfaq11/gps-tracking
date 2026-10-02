@@ -913,9 +913,10 @@ BEGIN
             added_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
             added_by  BIGINT      REFERENCES users(id) ON DELETE SET NULL,
             -- 'existing': seeded when the allowlist was created; 'owner':
-            -- someone claimed or was assigned it; 'admin': approved by hand.
+            -- someone claimed or was assigned it; 'admin': approved by hand;
+            -- 'auto': admitted while auto-approve was on (gateway_settings).
             source    TEXT        NOT NULL DEFAULT 'admin'
-                      CHECK (source IN ('existing', 'owner', 'admin'))
+                      CHECK (source IN ('existing', 'owner', 'admin', 'auto'))
         );
         INSERT INTO device_allowlist (device_id, source)
         SELECT device_id, 'existing' FROM (
@@ -927,6 +928,25 @@ BEGIN
     END IF;
 END
 $device_allowlist$;
+
+-- Widened for databases whose allowlist predates 'auto'.
+ALTER TABLE device_allowlist DROP CONSTRAINT IF EXISTS device_allowlist_source_check;
+ALTER TABLE device_allowlist ADD CONSTRAINT device_allowlist_source_check
+    CHECK (source IN ('existing', 'owner', 'admin', 'auto'));
+
+-- The admin's choice for trackers nobody approved yet -- one row:
+-- - auto_approve off (default, "hold"): refused and listed in
+--   device_login_attempts until an admin approves them
+-- - auto_approve on: admitted at once and added to the allowlist as
+--   'auto', so switching back to hold later keeps them (remove one by hand
+--   to refuse it again)
+CREATE TABLE IF NOT EXISTS gateway_settings (
+    id           BOOLEAN     PRIMARY KEY DEFAULT true CHECK (id),
+    auto_approve BOOLEAN     NOT NULL DEFAULT false,
+    changed_by   BIGINT      REFERENCES users(id) ON DELETE SET NULL,
+    changed_at   TIMESTAMPTZ
+);
+INSERT INTO gateway_settings (id) VALUES (true) ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS device_login_attempts (
     device_id  TEXT        PRIMARY KEY,
@@ -964,12 +984,20 @@ CREATE TRIGGER device_allowlist_clear_attempts
     AFTER INSERT ON device_allowlist
     FOR EACH ROW EXECUTE FUNCTION clear_login_attempts();
 
--- The gateway's one call at login: true if allowed, otherwise the attempt
--- is counted and false returned.
+-- The gateway's one call at login: true if allowed -- or newly allowed,
+-- while auto-approve is on -- otherwise the attempt is counted and false
+-- returned.
 CREATE OR REPLACE FUNCTION gateway_admit(p_device_id TEXT, p_peer TEXT)
 RETURNS BOOLEAN AS $$
 BEGIN
     IF EXISTS (SELECT 1 FROM device_allowlist WHERE device_id = p_device_id) THEN
+        RETURN true;
+    END IF;
+    IF EXISTS (SELECT 1 FROM gateway_settings WHERE auto_approve) THEN
+        -- The insert trigger clears any earlier refused attempt.
+        INSERT INTO device_allowlist (device_id, source)
+        VALUES (p_device_id, 'auto')
+        ON CONFLICT DO NOTHING;
         RETURN true;
     END IF;
     INSERT INTO device_login_attempts AS a (device_id, last_peer)
@@ -995,7 +1023,8 @@ BEGIN
         ) AS writers
     LOOP
         EXECUTE format(
-            'GRANT SELECT, INSERT, UPDATE, DELETE ON device_allowlist, device_login_attempts TO %s',
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON device_allowlist, device_login_attempts, '
+            'gateway_settings TO %s',
             r.who);
     END LOOP;
 END

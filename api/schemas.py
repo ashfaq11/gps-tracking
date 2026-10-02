@@ -923,7 +923,7 @@ class DeviceCommandOut(BaseModel):
 
 # --- tracker allowlist (admin) ---
 
-TrackerSource = Literal["existing", "owner", "admin"]
+TrackerSource = Literal["existing", "owner", "admin", "auto"]
 
 
 class AllowTrackerIn(BaseModel):
@@ -943,9 +943,26 @@ class AllowedTrackerOut(BaseModel):
     source: TrackerSource = Field(
         description=(
             "existing: already reporting when the allowlist was switched on; owner: allowed "
-            "because someone claimed or was assigned it; admin: approved by hand."
+            "because someone claimed or was assigned it; admin: approved by hand; auto: "
+            "admitted while auto-approve was on."
         )
     )
+
+
+class TrackerSettingsIn(BaseModel):
+    auto_approve: bool = Field(
+        description=(
+            "true: any new tracker is admitted at its first login, no approval needed. "
+            "false (hold): a new tracker is refused until an admin approves it."
+        )
+    )
+
+
+class TrackerSettingsOut(TrackerSettingsIn):
+    """How the gateway treats a tracker nobody approved yet."""
+
+    changed_at: datetime | None = None
+    changed_by: str | None = Field(default=None, description="Username of who last changed it.")
 
 
 class LoginAttemptOut(BaseModel):

@@ -7,13 +7,17 @@ unknown ones it refused. See sql/schema.sql's device_allowlist for the rules
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..deps import get_trackers, require_admin
-from ..schemas import AllowedTrackerOut, AllowTrackerIn, LoginAttemptOut
+from ..schemas import (
+    AllowedTrackerOut,
+    AllowTrackerIn,
+    LoginAttemptOut,
+    TrackerSettingsIn,
+    TrackerSettingsOut,
+)
 from ..trackers_repository import TrackerRepository
 from ..users_repository import AuthenticatedUser
 
-router = APIRouter(
-    prefix="/trackers", tags=["trackers"], dependencies=[Depends(require_admin)]
-)
+router = APIRouter(prefix="/trackers", tags=["trackers"], dependencies=[Depends(require_admin)])
 
 
 @router.get(
@@ -78,3 +82,37 @@ async def dismiss_attempt(device_id: str, trackers: TrackerRepository = Depends(
     """Still refused; it only reappears if it tries again."""
     if not await trackers.dismiss_attempt(device_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"No attempt from {device_id}")
+
+
+@router.get(
+    "/settings",
+    response_model=TrackerSettingsOut,
+    summary="Auto-approve new trackers, or hold them for approval",
+)
+async def get_settings(trackers: TrackerRepository = Depends(get_trackers)):
+    return await trackers.settings()
+
+
+@router.put(
+    "/settings",
+    response_model=TrackerSettingsOut,
+    summary="Switch auto-approve for new trackers on or off",
+)
+async def set_settings(
+    payload: TrackerSettingsIn,
+    admin: AuthenticatedUser = Depends(require_admin),
+    trackers: TrackerRepository = Depends(get_trackers),
+) -> TrackerSettingsOut:
+    """
+    **On:** any tracker that logs in is admitted at once, no approval needed,
+    and added to the allowlist as `auto` -- including the ones waiting in
+    `/trackers/attempts`, on their next login attempt.
+
+    **Off (hold, the default):** a tracker nobody approved is refused and
+    waits in `/trackers/attempts`. Trackers auto-approved earlier stay
+    allowed; remove one from the allowlist to refuse it again.
+
+    Applies when the gateway runs with GATEWAY_ALLOWLIST=enforce (the
+    default); with `log` or `off` every tracker is admitted anyway.
+    """
+    return await trackers.set_auto_approve(payload.auto_approve, admin.id, requester=admin.username)
