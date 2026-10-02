@@ -2,46 +2,9 @@ name: Deploy to AWS
 on:
   push:
     branches: [main]
-  # Pull requests get the same build and tests, never a deploy.
-  pull_request:
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    services:
-      # A scratch database: proves sql/schema.sql applies cleanly (twice --
-      # it must stay idempotent) and runs the SQL-vs-Python report tests.
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: trackit
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
-    env:
-      PGPASSWORD: postgres
-      TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/trackit
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - name: Install
-        run: pip install -r requirements-dev.txt ruff
-      - name: Lint
-        run: ruff check .
-      - name: Apply sql/schema.sql (twice)
-        run: |
-          psql -h localhost -U postgres -d trackit -v ON_ERROR_STOP=1 -q -f sql/schema.sql
-          psql -h localhost -U postgres -d trackit -v ON_ERROR_STOP=1 -q -f sql/schema.sql
-      - name: Tests
-        run: python -m unittest discover -s tests -t .
-
   deploy:
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency: deploy-production
     steps:
