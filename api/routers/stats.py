@@ -122,6 +122,8 @@ async def trip_report(
             running_minutes=sum(d.running_minutes for d in devices),
             halt_count=sum(d.halt_count for d in devices),
             halt_minutes=sum(d.halt_minutes for d in devices),
+            short_stop_minutes=sum(d.short_stop_minutes for d in devices),
+            no_data_minutes=sum(d.no_data_minutes for d in devices),
         ),
         devices=devices,
     )

@@ -382,11 +382,23 @@ class DeviceReport(BaseModel):
         "or spiking 50+ km/h above both neighbours are ignored.",
     )
     running_minutes: float = Field(
-        description="Time spent moving. Gaps over 10 minutes between fixes are not counted."
+        description="Time spent moving. Running, halt, short-stop and no-data minutes add up "
+        "to the window (ending now for one still running) -- see api/reports.py."
     )
     halt_count: int = Field(description="Stops of halt_threshold_minutes or longer.")
-    halt_minutes: float = Field(description="Total length of those halts.")
+    halt_minutes: float = Field(
+        description="Total length of those halts, including silent time parked (a tracker "
+        "sending no position until it moves again from the same spot)."
+    )
     longest_halt_minutes: float
+    short_stop_minutes: float = Field(
+        default=0.0, description="Stops shorter than halt_threshold_minutes (traffic, signals)."
+    )
+    no_data_minutes: float = Field(
+        default=0.0,
+        description="Time not otherwise accounted for: before the first fix, long silences "
+        "while moving, or reappearing somewhere else.",
+    )
     fix_count: int
     first_fix_at: datetime | None = None
     last_fix_at: datetime | None = None
@@ -401,6 +413,8 @@ class ReportTotals(BaseModel):
     running_minutes: float
     halt_count: int
     halt_minutes: float
+    short_stop_minutes: float = 0.0
+    no_data_minutes: float = 0.0
 
 
 class TripReport(BaseModel):

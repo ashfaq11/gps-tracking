@@ -90,7 +90,7 @@ class TestTripReportParity(unittest.IsolatedAsyncioTestCase):
             ordered = [f[2] for f in fixes]
             usable = [f for f in ordered if f.gps_fixed is not False and (f.latitude, f.longitude) != (0, 0)]
             dirty_dropped += len(usable) - len(clean_route(ordered))
-            expected[device_id] = summarize_device(ordered)
+            expected[device_id] = ordered
         await self.pool.executemany(
             "INSERT INTO device_locations "
             "(device_id, latitude, longitude, speed_kmh, fixed_at, received_at, gps_fixed) "
@@ -98,9 +98,17 @@ class TestTripReportParity(unittest.IsolatedAsyncioTestCase):
             rows,
         )
 
-        reports = await self.repo.trip_report(
-            start, start + timedelta(days=31), device_ids=frozenset(expected)
-        )
+        # A window cut out of the middle of the trips, so stops and drives
+        # crossing both edges -- and the context read around it -- are
+        # exercised; it ends in the past, so "now" plays no part.
+        since = start + timedelta(hours=3)
+        until = start + timedelta(hours=40)
+        expected = {
+            device_id: summarize_device(ordered, since, until)
+            for device_id, ordered in expected.items()
+            if any(since <= f.at <= until for f in ordered)
+        }
+        reports = await self.repo.trip_report(since, until, device_ids=frozenset(expected))
 
         self.assertEqual(sorted(r.device_id for r in reports), sorted(expected))
         for report in reports:
@@ -112,6 +120,15 @@ class TestTripReportParity(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(report.halt_count, want.halt_count)
                 self.assertAlmostEqual(report.halt_minutes, want.halt_minutes, places=6)
                 self.assertAlmostEqual(report.longest_halt_minutes, want.longest_halt_minutes, places=6)
+                self.assertAlmostEqual(report.short_stop_minutes, want.short_stop_minutes, places=6)
+                self.assertAlmostEqual(report.no_data_minutes, want.no_data_minutes, places=6)
+                # Every minute of the window is exactly one of the four.
+                self.assertAlmostEqual(
+                    report.running_minutes + report.halt_minutes + report.short_stop_minutes
+                    + report.no_data_minutes,
+                    (until - since).total_seconds() / 60,
+                    places=6,
+                )
                 self.assertEqual(report.fix_count, want.fix_count)
                 self.assertEqual(report.first_fix_at, want.first_fix_at)
                 self.assertEqual(report.last_fix_at, want.last_fix_at)

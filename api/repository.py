@@ -12,7 +12,9 @@ from .reports import (
     HALT_THRESHOLD,
     MAX_PLAUSIBLE_SPEED_KMH,
     MAX_RUNNING_GAP,
+    PARKED_RADIUS_M,
     SPIKE_KMH,
+    STOP_CONTEXT,
     CLOCK_AHEAD_LIMIT,
     CLOCK_BEHIND_LIMIT,
     ROUTE_JITTER_M,
@@ -396,22 +398,35 @@ class InMemoryLocationRepository:
     async def trip_report(
         self, since: datetime, until: datetime, device_ids: frozenset[str] | None = None
     ) -> list[DeviceReport]:
+        # Fixes up to STOP_CONTEXT either side, so stops and drives that
+        # cross the window's edges are seen; a vehicle is listed only if it
+        # reported inside the window.
         by_device: dict[str, list[tuple[datetime, LocationOut]]] = {}
+        reported: set[str] = set()
         for row in self._rows:
             if device_ids is not None and row.device_id not in device_ids:
                 continue
             at = fix_time(row.fixed_at, row.received_at)
-            if not self._sub_active(row.device_id) or not since <= at <= until:
+            if not self._sub_active(row.device_id):
+                continue
+            if not since - STOP_CONTEXT <= at <= until + STOP_CONTEXT:
                 continue
             by_device.setdefault(row.device_id, []).append((at, row))
+            if since <= at <= until:
+                reported.add(row.device_id)
+        end = min(until, datetime.now(timezone.utc))
         reports = []
         for device_id, rows in by_device.items():
+            if device_id not in reported:
+                continue
             rows.sort(key=lambda pair: (pair[0], pair[1].id))
             trips = summarize_device(
                 [
                     ReportFix(r.latitude, r.longitude, r.speed_kmh, at, r.gps_fixed)
                     for at, r in rows
-                ]
+                ],
+                since,
+                end,
             )
             reports.append(DeviceReport(device_id=device_id, **vars(trips)))
         return sorted(reports, key=lambda r: (-r.distance_km, r.device_id))
@@ -783,11 +798,12 @@ class PostgresLocationRepository:
     async def trip_report(
         self, since: datetime, until: datetime, device_ids: frozenset[str] | None = None
     ) -> list[DeviceReport]:
-        # One pass, in the database: LAG pairs each fix with the one before
-        # it for distance and running time, and a running count of moving
-        # fixes numbers the stationary runs between them, so every run of
-        # consecutive stopped fixes shares a `grp`. Same rules, one for one,
-        # as api/reports.py's summarize_device -- tests compare the two.
+        # One pass, in the database, by the same rules as api/reports.py's
+        # summarize_device -- tests compare the two. Window functions pair
+        # each route fix with its neighbours: inside the window for distance
+        # and top speed, across the whole context for time, where each gap
+        # is classified by the fix that opens it and runs of stopped gaps
+        # (numbered by a running count of the others) make the stops.
         #
         # `at` is reports.fix_time: the tracker's clock unless it is plainly
         # wrong. The received_at bounds in `base` are what that rule allows
@@ -805,22 +821,28 @@ class PostgresLocationRepository:
                                 THEN received_at ELSE fixed_at
                            END                                        AS at
                     FROM device_locations dl
-                    WHERE received_at >= $1::timestamptz - $8::interval
-                      AND received_at <= $2::timestamptz + $9::interval
+                    WHERE received_at >= $1::timestamptz - $13::interval - $8::interval
+                      AND received_at <= $2::timestamptz + $13::interval + $9::interval
                       AND ($3::text[] IS NULL OR device_id = ANY($3::text[]))
                       AND NOT EXISTS (
                           SELECT 1 FROM device_subscriptions ds
                           WHERE ds.device_id = dl.device_id AND ds.subscription_end_date <= now()
                       )
                 ),
-                win AS (
-                    SELECT * FROM base WHERE at >= $1 AND at <= $2
+                -- The window, ending now if it has not finished yet.
+                bounds AS (
+                    SELECT $1::timestamptz AS s, LEAST($2::timestamptz, now()) AS e
                 ),
-                -- Every fix counts as a position; the route is measured below.
+                ctx AS (
+                    SELECT * FROM base
+                    WHERE at >= $1::timestamptz - $13::interval
+                      AND at <= $2::timestamptz + $13::interval
+                ),
+                -- Every fix in the window counts as a position.
                 counts AS (
                     SELECT device_id, count(*) AS fix_count,
                            min(at) AS first_fix_at, max(at) AS last_fix_at
-                    FROM win GROUP BY device_id
+                    FROM ctx WHERE at >= $1 AND at <= $2 GROUP BY device_id
                 ),
                 -- clean_route, step 1: a GPS lock and a real position.
                 usable AS (
@@ -834,7 +856,7 @@ class PostgresLocationRepository:
                            LEAD(longitude) OVER w                     AS n_lon,
                            LEAD(at) OVER w                            AS n_at,
                            LEAD(COALESCE(speed_kmh, 0)) OVER w        AS n_speed
-                    FROM win
+                    FROM ctx
                     WHERE gps_fixed IS DISTINCT FROM false
                       AND NOT (latitude = 0 AND longitude = 0)
                     WINDOW w AS (PARTITION BY device_id ORDER BY at, id)
@@ -860,73 +882,117 @@ class PostgresLocationRepository:
                               * extract(epoch FROM n_at - p_at) * $11 + $12
                     )
                 ),
-                f AS (
-                    SELECT device_id, id, latitude, longitude, speed_kmh, at, gps_fixed,
-                           COALESCE(speed_kmh, 0)                     AS speed,
-                           LEAD(COALESCE(speed_kmh, 0)) OVER w        AS n_speed,
+                -- Distance and top speed: the route inside the window.
+                ins AS (
+                    SELECT device_id, speed_kmh,
                            LAG(latitude) OVER w                       AS p_lat,
                            LAG(longitude) OVER w                      AS p_lon,
-                           LAG(at) OVER w                             AS p_at,
-                           LAG(COALESCE(speed_kmh, 0)) OVER w         AS p_speed
+                           latitude, longitude,
+                           LAG(COALESCE(speed_kmh, 0)) OVER w         AS p_speed,
+                           LEAD(COALESCE(speed_kmh, 0)) OVER w        AS n_speed
                     FROM kept
+                    WHERE at >= $1 AND at <= $2
                     WINDOW w AS (PARTITION BY device_id ORDER BY at, id)
                 ),
-                seg AS (
-                    SELECT f.*,
-                           CASE WHEN p_lat IS NULL THEN 0 ELSE 2 * 6371000 * asin(least(1, sqrt(power(sin(radians(latitude - p_lat) / 2), 2) + cos(radians(p_lat)) * cos(radians(latitude)) * power(sin(radians(longitude - p_lon) / 2), 2)))) END AS metres,
-                           CASE WHEN p_speed > 0 AND at - p_at <= $5
-                                THEN extract(epoch FROM at - p_at) ELSE 0
-                           END                                        AS running_s,
-                           count(*) FILTER (WHERE speed > 0) OVER (
-                               PARTITION BY device_id ORDER BY at, id
-                           )                                          AS grp
-                    FROM f
-                ),
-                halts AS (
-                    SELECT device_id, extract(epoch FROM max(at) - min(at)) AS secs
-                    FROM seg
-                    WHERE speed = 0
-                    GROUP BY device_id, grp
-                    HAVING count(*) >= 2 AND max(at) - min(at) >= $4
-                ),
-                halt_totals AS (
-                    SELECT device_id, count(*) AS n, sum(secs) AS secs, max(secs) AS longest
-                    FROM halts GROUP BY device_id
-                ),
                 route AS (
-                    SELECT s.device_id,
-                           sum(s.metres) / 1000                     AS distance_km,
+                    SELECT device_id,
+                           sum(CASE WHEN p_lat IS NULL THEN 0 ELSE 2 * 6371000 * asin(least(1, sqrt(power(sin(radians(latitude - p_lat) / 2), 2) + cos(radians(p_lat)) * cos(radians(latitude)) * power(sin(radians(longitude - p_lon) / 2), 2)))) END) / 1000
+                                                                      AS distance_km,
                            -- Plausible readings only: under the ceiling, and
                            -- not a spike above both neighbours (a missing
                            -- neighbour does not count against it).
-                           max(s.speed_kmh) FILTER (
-                               WHERE s.speed_kmh <= $6
+                           max(speed_kmh) FILTER (
+                               WHERE speed_kmh <= $6
                                  AND NOT (
-                                     (s.p_speed IS NOT NULL OR s.n_speed IS NOT NULL)
-                                     AND (s.p_speed IS NULL OR s.speed_kmh > s.p_speed + $7)
-                                     AND (s.n_speed IS NULL OR s.speed_kmh > s.n_speed + $7)
+                                     (p_speed IS NOT NULL OR n_speed IS NOT NULL)
+                                     AND (p_speed IS NULL OR speed_kmh > p_speed + $7)
+                                     AND (n_speed IS NULL OR speed_kmh > n_speed + $7)
                                  )
-                           )                                        AS max_speed_kmh,
-                           sum(s.running_s) / 60                    AS running_minutes,
-                           COALESCE(max(h.n), 0)                    AS halt_count,
-                           COALESCE(max(h.secs), 0) / 60            AS halt_minutes,
-                           COALESCE(max(h.longest), 0) / 60         AS longest_halt_minutes
-                    FROM seg s
-                    LEFT JOIN halt_totals h ON h.device_id = s.device_id
-                    GROUP BY s.device_id
+                           )                                          AS max_speed_kmh
+                    FROM ins GROUP BY device_id
+                ),
+                -- Time: each gap, from a route fix to the next (the last one
+                -- to the window's end), classified by the fix that opens it.
+                gaps AS (
+                    SELECT k.device_id, k.id, k.at, k.speed, k.latitude, k.longitude,
+                           k.n_lat, k.n_lon, k.n_at,
+                           COALESCE(k.n_at, GREATEST(k.at, b.e))      AS end_at,
+                           b.s, b.e
+                    FROM (
+                        SELECT device_id, id, at, latitude, longitude,
+                               COALESCE(speed_kmh, 0)                 AS speed,
+                               LEAD(latitude) OVER w                  AS n_lat,
+                               LEAD(longitude) OVER w                 AS n_lon,
+                               LEAD(at) OVER w                        AS n_at
+                        FROM kept
+                        WINDOW w AS (PARTITION BY device_id ORDER BY at, id)
+                    ) k CROSS JOIN bounds b
+                ),
+                classified AS (
+                    SELECT device_id, id, at,
+                           CASE
+                               WHEN speed > 0 THEN
+                                   CASE WHEN end_at - at <= $5 THEN 'run' ELSE 'none' END
+                               WHEN n_at IS NULL OR 2 * 6371000 * asin(least(1, sqrt(power(sin(radians(n_lat - latitude) / 2), 2) + cos(radians(latitude)) * cos(radians(n_lat)) * power(sin(radians(n_lon - longitude) / 2), 2)))) <= $14 THEN 'stop'
+                               WHEN end_at - at <= $5 THEN 'run'
+                               ELSE 'none'
+                           END                                        AS kind,
+                           GREATEST(0, extract(epoch FROM LEAST(end_at, e) - GREATEST(at, s)))
+                                                                      AS secs
+                    FROM gaps
+                ),
+                numbered AS (
+                    SELECT *,
+                           count(*) FILTER (WHERE kind <> 'stop') OVER (
+                               PARTITION BY device_id ORDER BY at, id
+                           )                                          AS run_no
+                    FROM classified
+                ),
+                stops AS (
+                    SELECT device_id, sum(secs) AS secs
+                    FROM numbered WHERE kind = 'stop'
+                    GROUP BY device_id, run_no
+                ),
+                stop_totals AS (
+                    SELECT device_id,
+                           count(*) FILTER (WHERE secs >= extract(epoch FROM $4::interval))
+                                                                      AS halt_count,
+                           COALESCE(sum(secs) FILTER (
+                               WHERE secs >= extract(epoch FROM $4::interval)), 0)
+                                                                      AS halt_s,
+                           COALESCE(max(secs) FILTER (
+                               WHERE secs >= extract(epoch FROM $4::interval)), 0)
+                                                                      AS longest_s,
+                           COALESCE(sum(secs) FILTER (
+                               WHERE secs < extract(epoch FROM $4::interval)), 0)
+                                                                      AS short_s
+                    FROM stops GROUP BY device_id
+                ),
+                running AS (
+                    SELECT device_id, sum(secs) FILTER (WHERE kind = 'run') AS run_s
+                    FROM classified GROUP BY device_id
                 )
                 -- From counts, so a vehicle whose every fix was left off the
                 -- route still appears (with nothing driven).
                 SELECT c.device_id,
-                       COALESCE(r.distance_km, 0)               AS distance_km,
+                       COALESCE(r.distance_km, 0)                     AS distance_km,
                        r.max_speed_kmh,
-                       COALESCE(r.running_minutes, 0)           AS running_minutes,
-                       COALESCE(r.halt_count, 0)                AS halt_count,
-                       COALESCE(r.halt_minutes, 0)              AS halt_minutes,
-                       COALESCE(r.longest_halt_minutes, 0)      AS longest_halt_minutes,
+                       COALESCE(rn.run_s, 0) / 60                     AS running_minutes,
+                       COALESCE(st.halt_count, 0)                     AS halt_count,
+                       COALESCE(st.halt_s, 0) / 60                    AS halt_minutes,
+                       COALESCE(st.longest_s, 0) / 60                 AS longest_halt_minutes,
+                       COALESCE(st.short_s, 0) / 60                   AS short_stop_minutes,
+                       GREATEST(0,
+                           extract(epoch FROM GREATEST(b.e - b.s, interval '0'))
+                           - COALESCE(rn.run_s, 0) - COALESCE(st.halt_s, 0)
+                           - COALESCE(st.short_s, 0)
+                       ) / 60                                         AS no_data_minutes,
                        c.fix_count, c.first_fix_at, c.last_fix_at
                 FROM counts c
+                CROSS JOIN bounds b
                 LEFT JOIN route r ON r.device_id = c.device_id
+                LEFT JOIN running rn ON rn.device_id = c.device_id
+                LEFT JOIN stop_totals st ON st.device_id = c.device_id
                 ORDER BY distance_km DESC, c.device_id
                 """,
                 since,
@@ -941,6 +1007,8 @@ class PostgresLocationRepository:
                 ROUTE_SPIKE_MAX_GAP.total_seconds(),
                 ROUTE_SPEED_SLACK,
                 ROUTE_JITTER_M,
+                STOP_CONTEXT,
+                PARKED_RADIUS_M,
             )
         return [
             DeviceReport(
@@ -951,6 +1019,8 @@ class PostgresLocationRepository:
                 halt_count=r["halt_count"],
                 halt_minutes=float(r["halt_minutes"]),
                 longest_halt_minutes=float(r["longest_halt_minutes"]),
+                short_stop_minutes=float(r["short_stop_minutes"]),
+                no_data_minutes=float(r["no_data_minutes"]),
                 fix_count=r["fix_count"],
                 first_fix_at=r["first_fix_at"],
                 last_fix_at=r["last_fix_at"],

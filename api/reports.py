@@ -32,15 +32,31 @@ the same filtering the dashboard's map applies (core/format.ts cleanRoute):
   more than SPIKE_KMH above both neighbouring readings, since a real vehicle
   ramps up rather than jumping 40 -> 240 -> 40. The dashboard's own top-speed
   figures (core/format.ts plausibleTopSpeed) apply the same three rules.
-- running time: for each consecutive pair whose earlier fix was moving, the
-  time between them -- unless that gap exceeds MAX_RUNNING_GAP, which means
-  the tracker went quiet (tunnel, flat battery), not that it drove.
-- a stop: a run of at least two consecutive stationary fixes, lasting from
-  the first to the last of them -- device-detail.ts's `stops`.
-- a halt: a stop of HALT_THRESHOLD or longer, the threshold the live map's
-  "Halted" badge uses. Shorter stops (traffic lights) are not reported.
+Time: every minute of the window is exactly one of running, halted, short
+stop or no data, so the four always add up to the window (ending now, for
+a window that has not finished). Each gap between consecutive route fixes
+is classified by the fix that opens it:
 
-A stop cut by either end of the window counts only its part inside it.
+- moving (speed > 0): running, unless the gap exceeds MAX_RUNNING_GAP --
+  then the tracker went quiet (tunnel, flat battery): no data.
+- stationary, and the next fix is within PARKED_RADIUS_M of it: stopped --
+  however long the gap. A parked tracker often sends nothing but
+  heartbeats (no position) until the engine starts, so the whole silent
+  night is the stop, not just its first minute.
+- stationary, but the next fix is elsewhere: it drove off -- running if
+  within MAX_RUNNING_GAP, else no data.
+- the last fix: as if repeated at the window's end (still parked, or still
+  driving if that is under MAX_RUNNING_GAP away).
+
+Consecutive stopped gaps make one stop. A stop of HALT_THRESHOLD or longer
+is a halt -- the threshold the live map's "Halted" badge uses; a shorter
+one (traffic, a signal) is a short stop. Whatever is left -- before the
+first fix, during long silences -- is no data.
+
+Fixes up to STOP_CONTEXT either side of the window are read too, so a stop
+or drive that crosses an edge of it (parked overnight, then "Today") is
+seen; only its part inside the window counts. Positions, distance and top
+speed use fixes inside the window only.
 """
 
 import math
@@ -48,6 +64,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 HALT_THRESHOLD = timedelta(minutes=10)
+# A stationary fix and the next one this close: still the same stop, however
+# long the silence between them. Wider than GPS drift on a parked vehicle,
+# narrower than any real drive.
+PARKED_RADIUS_M = 200.0
+# How far either side of the window fixes are read, to see a stop or drive
+# that crosses its edges.
+STOP_CONTEXT = timedelta(hours=24)
 # fix_time's sanity bounds on the tracker's own clock -- the same ones
 # check_geofences() in sql/schema.sql applies to a crossing's time.
 CLOCK_AHEAD_LIMIT = timedelta(minutes=10)
@@ -102,6 +125,8 @@ class DeviceTrips:
     fix_count: int
     first_fix_at: datetime | None
     last_fix_at: datetime | None
+    short_stop_minutes: float = 0.0
+    no_data_minutes: float = 0.0
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -170,49 +195,73 @@ def clean_route(fixes: list[ReportFix]) -> list[ReportFix]:
     ]
 
 
-def summarize_device(fixes: list[ReportFix]) -> DeviceTrips:
-    """`fixes` must already be in (at, id) order."""
-    counted = fixes
-    fixes = clean_route(fixes)
-    metres = 0.0
-    running = timedelta()
-    halts: list[timedelta] = []
-    stop_start: datetime | None = None
-    stop_end: datetime | None = None
-    stop_len = 0
+def summarize_device(
+    fixes: list[ReportFix], since: datetime | None = None, until: datetime | None = None
+) -> DeviceTrips:
+    """`fixes` in (at, id) order, and may run up to STOP_CONTEXT past either
+    end of the window [since, until] -- see the module docstring. `until`
+    must already be capped at now. Without a window, it is the first to the
+    last fix."""
+    if since is None:
+        since = fixes[0].at if fixes else datetime.min
+    if until is None:
+        until = fixes[-1].at if fixes else since
+    counted = [f for f in fixes if since <= f.at <= until]
+    route = clean_route(fixes)
+    inside = [f for f in route if since <= f.at <= until]
+
+    metres = sum(
+        haversine_m(a.latitude, a.longitude, b.latitude, b.longitude)
+        for a, b in zip(inside, inside[1:])
+    )
+
+    def overlap(start: datetime, end: datetime) -> float:
+        return max(0.0, (min(end, until) - max(start, since)).total_seconds())
+
+    halt_s = HALT_THRESHOLD.total_seconds()
+    running = 0.0
+    halts: list[float] = []
+    short_stops: list[float] = []
+    stop: float | None = None
 
     def close_stop() -> None:
-        if stop_len >= 2 and stop_start is not None and stop_end is not None:
-            length = stop_end - stop_start
-            if length >= HALT_THRESHOLD:
-                halts.append(length)
+        if stop is not None:
+            (halts if stop >= halt_s else short_stops).append(stop)
 
-    previous: ReportFix | None = None
-    for fix in fixes:
-        if previous is not None:
-            metres += haversine_m(previous.latitude, previous.longitude, fix.latitude, fix.longitude)
-            gap = fix.at - previous.at
-            if (previous.speed_kmh or 0) > 0 and gap <= MAX_RUNNING_GAP:
-                running += gap
-        if (fix.speed_kmh or 0) == 0:
-            if stop_len == 0:
-                stop_start = fix.at
-            stop_end = fix.at
-            stop_len += 1
+    for i, fix in enumerate(route):
+        nxt = route[i + 1] if i + 1 < len(route) else None
+        end = nxt.at if nxt is not None else max(fix.at, until)
+        within_gap = end - fix.at <= MAX_RUNNING_GAP
+        if (fix.speed_kmh or 0) > 0:
+            kind = "run" if within_gap else "none"
+        elif nxt is None or haversine_m(
+            fix.latitude, fix.longitude, nxt.latitude, nxt.longitude
+        ) <= PARKED_RADIUS_M:
+            kind = "stop"
         else:
-            close_stop()
-            stop_len = 0
-        previous = fix
+            kind = "run" if within_gap else "none"
+        seconds = overlap(fix.at, end)
+        if kind == "stop":
+            stop = (stop or 0.0) + seconds
+            continue
+        close_stop()
+        stop = None
+        if kind == "run":
+            running += seconds
     close_stop()
 
+    window = max(0.0, (until - since).total_seconds()) if fixes else 0.0
+    no_data = max(0.0, window - running - sum(halts) - sum(short_stops))
     return DeviceTrips(
         distance_km=metres / 1000,
-        max_speed_kmh=plausible_top_speed(fixes),
-        running_minutes=running.total_seconds() / 60,
+        max_speed_kmh=plausible_top_speed(inside),
+        running_minutes=running / 60,
         halt_count=len(halts),
-        halt_minutes=sum(h.total_seconds() for h in halts) / 60,
-        longest_halt_minutes=max((h.total_seconds() for h in halts), default=0) / 60,
+        halt_minutes=sum(halts) / 60,
+        longest_halt_minutes=max(halts, default=0) / 60,
         fix_count=len(counted),
         first_fix_at=counted[0].at if counted else None,
         last_fix_at=counted[-1].at if counted else None,
+        short_stop_minutes=sum(short_stops) / 60,
+        no_data_minutes=no_data / 60,
     )
