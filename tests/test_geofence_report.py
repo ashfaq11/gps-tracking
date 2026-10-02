@@ -35,8 +35,12 @@ def event(kind: str, minute: float, device: str = "dev-a", fence_id: int = 1) ->
     )
 
 
-def report(events, fences=None, now=UNTIL):
-    return summarize_geofences(fences or [fence()], events, SINCE, UNTIL, now)
+def report(events, fences=None, now=UNTIL, prior=None):
+    return summarize_geofences(fences or [fence()], events, SINCE, UNTIL, now, prior)[0]
+
+
+def report_time(events, fences=None, now=UNTIL, prior=None):
+    return summarize_geofences(fences or [fence()], events, SINCE, UNTIL, now, prior)[1]
 
 
 class TestTimeInside(unittest.TestCase):
@@ -82,6 +86,59 @@ class TestTimeInside(unittest.TestCase):
         self.assertEqual(rows[1].entries + rows[1].exits, 0)
 
 
+class TestInsideAndOutside(unittest.TestCase):
+    """Inside + outside = the window, per vehicle, and in the totals."""
+
+    def test_each_vehicle_inside_plus_outside_is_the_window(self):
+        [row] = report([event("enter", 60), event("exit", 150)])
+        vehicle = row.vehicles["dev-a"]
+        self.assertAlmostEqual(vehicle.seconds_inside / 60, 90)
+        self.assertAlmostEqual(vehicle.seconds_outside / 60, 600 - 90)
+
+    def test_overlapping_geofences_count_a_vehicle_inside_once(self):
+        # Inside Depot 0-300 and, overlapping it, Yard 100-400: inside any
+        # geofence for 400 minutes, not 300 + 300.
+        fences = [fence(1, "Depot"), fence(2, "Yard")]
+        events = [
+            event("enter", 0, fence_id=1), event("exit", 300, fence_id=1),
+            event("enter", 100, fence_id=2), event("exit", 400, fence_id=2),
+        ]
+        time = report_time(events, fences)
+        self.assertAlmostEqual(time.seconds_inside / 60, 400)
+        self.assertAlmostEqual(time.seconds_outside / 60, 200)
+        self.assertAlmostEqual((time.seconds_inside + time.seconds_outside) / 60, 600)
+        # Each geofence on its own still adds up to the window.
+        for row in report(events, fences):
+            vehicle = row.vehicles["dev-a"]
+            self.assertAlmostEqual((vehicle.seconds_inside + vehicle.seconds_outside) / 60, 600)
+
+    def test_totals_are_per_vehicle_window(self):
+        events = [event("enter", 0, "dev-a"), event("exit", 60, "dev-a"), event("enter", 0, "dev-b")]
+        time = report_time(events)
+        self.assertAlmostEqual(time.seconds_inside / 60, 60 + 600)
+        self.assertAlmostEqual((time.seconds_inside + time.seconds_outside) / 60, 2 * 600)
+
+    def test_inside_all_along_with_no_crossing_in_the_window(self):
+        # Entered yesterday, never left: no crossing today, inside all day.
+        prior = [event("enter", -600)]
+        [row] = report([], prior=prior)
+        self.assertAlmostEqual(row.vehicles["dev-a"].seconds_inside / 60, 600)
+        self.assertEqual((row.entries, row.exits), (0, 0))
+
+    def test_left_before_the_window_starts_outside(self):
+        # The last crossing before the window was an exit, so a repeated
+        # enter-less exit today does not count the morning as inside.
+        prior = [event("exit", -30)]
+        [row] = report([event("exit", 45)], prior=prior)
+        self.assertAlmostEqual(row.vehicles["dev-a"].seconds_inside, 0)
+
+    def test_a_window_still_running_ends_now(self):
+        time = report_time([event("enter", 60)], now=at(90))
+        self.assertAlmostEqual(time.window_seconds / 60, 90)
+        self.assertAlmostEqual(time.seconds_inside / 60, 30)
+        self.assertAlmostEqual(time.seconds_outside / 60, 60)
+
+
 class TestReportEndpoint(GeofenceTestCase):
     async def fetch(self, token=None, query=""):
         return await self.client.get(
@@ -99,11 +156,22 @@ class TestReportEndpoint(GeofenceTestCase):
         response = await self.fetch()
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["totals"], {"geofences": 1, "entries": 1, "exits": 1, "alerts": 1, "vehicles": 1})
+        totals = body["totals"]
+        self.assertEqual(
+            {k: totals[k] for k in ("geofences", "entries", "exits", "alerts", "vehicles")},
+            {"geofences": 1, "entries": 1, "exits": 1, "alerts": 1, "vehicles": 1},
+        )
+        self.assertAlmostEqual(totals["time_inside_minutes"], 30, places=3)
+        self.assertAlmostEqual(
+            totals["time_inside_minutes"] + totals["time_outside_minutes"],
+            totals["window_minutes"],
+            places=3,
+        )
         self.assertFalse(body["truncated"])
         first, second = body["geofences"]
         self.assertEqual((first["name"], second["name"]), ("Depot", "Yard"))
         self.assertAlmostEqual(first["time_inside_minutes"], 30, places=3)
+        self.assertAlmostEqual(first["time_outside_minutes"], 24 * 60 - 30, places=2)
         self.assertEqual(first["vehicles"][0]["device_id"], "dev-a")
         self.assertEqual((second["entries"], second["vehicles"]), (0, []))
 

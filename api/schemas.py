@@ -852,6 +852,9 @@ class GeofenceReportVehicle(BaseModel):
     entries: int
     exits: int
     time_inside_minutes: float
+    time_outside_minutes: float = Field(
+        default=0.0, description="The rest of the window: inside + outside = the window."
+    )
     last_event_at: datetime | None = None
 
 
@@ -864,8 +867,13 @@ class GeofenceReportRow(BaseModel):
     exits: int
     alerts: int = Field(description="Crossings this geofence's settings sent an alert for.")
     time_inside_minutes: float = Field(
-        description="Summed across vehicles: from each enter to its exit, counting a vehicle "
-        "already inside at the window's start from then, and one still inside up to its end."
+        description="Summed across this geofence's vehicles: from each enter to its exit, "
+        "counting a vehicle already inside at the window's start from then, and one still "
+        "inside up to its end."
+    )
+    time_outside_minutes: float = Field(
+        default=0.0,
+        description="Summed across the same vehicles: each one's inside + outside = the window.",
     )
     last_event_at: datetime | None = None
     vehicles: list[GeofenceReportVehicle] = Field(description="Most crossings first.")
@@ -876,7 +884,22 @@ class GeofenceReportTotals(BaseModel):
     entries: int
     exits: int
     alerts: int
-    vehicles: int = Field(description="Distinct vehicles that crossed any geofence.")
+    vehicles: int = Field(
+        description="Distinct vehicles that crossed any geofence, or were inside one all along."
+    )
+    window_minutes: float = Field(
+        default=0.0, description="The window's length, ending now if it has not finished."
+    )
+    time_inside_minutes: float = Field(
+        default=0.0,
+        description="Per vehicle, time inside any geofence -- overlapping geofences counted "
+        "once -- summed over vehicles.",
+    )
+    time_outside_minutes: float = Field(
+        default=0.0,
+        description="Per vehicle, time outside all of them, summed: inside + outside = "
+        "vehicles x window.",
+    )
 
 
 class GeofenceReport(BaseModel):
