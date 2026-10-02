@@ -175,6 +175,43 @@ class TestReportEndpoint(GeofenceTestCase):
         self.assertEqual(first["vehicles"][0]["device_id"], "dev-a")
         self.assertEqual((second["entries"], second["vehicles"]), (0, []))
 
+    async def test_a_vehicle_filter_narrows_the_summary_too(self):
+        depot = (await self.create({**CIRCLE, "device_ids": ["dev-a", "dev-b"]})).json()
+        yard = (await self.create({**SQUARE, "device_ids": ["dev-b"]})).json()
+        repo = self.app.state.geofences
+        now = datetime.now(timezone.utc)
+        repo.record_event(depot["id"], "dev-a", "enter", occurred_at=now - timedelta(minutes=50))
+        repo.record_event(depot["id"], "dev-a", "exit", occurred_at=now - timedelta(minutes=20))
+        repo.record_event(depot["id"], "dev-b", "enter", occurred_at=now - timedelta(minutes=40))
+        repo.record_event(yard["id"], "dev-b", "enter", occurred_at=now - timedelta(minutes=10))
+
+        body = (await self.fetch(query="?device_id=dev-a")).json()
+        self.assertEqual((body["totals"]["entries"], body["totals"]["exits"]), (1, 1))
+        self.assertEqual(body["totals"]["vehicles"], 1)
+        self.assertAlmostEqual(body["totals"]["time_inside_minutes"], 30, places=2)
+        # Only the geofence dev-a is assigned to -- Yard watches dev-b only.
+        self.assertEqual([g["name"] for g in body["geofences"]], ["Depot"])
+        self.assertEqual(
+            [v["device_id"] for v in body["geofences"][0]["vehicles"]], ["dev-a"]
+        )
+
+        everyone = (await self.fetch()).json()
+        self.assertEqual(everyone["totals"]["entries"], 3)
+        self.assertEqual(everyone["totals"]["vehicles"], 2)
+
+    async def test_a_geofence_filter_narrows_the_summary_too(self):
+        depot = (await self.create({**CIRCLE, "device_ids": ["dev-a", "dev-b"]})).json()
+        yard = (await self.create({**SQUARE, "device_ids": ["dev-b"]})).json()
+        repo = self.app.state.geofences
+        now = datetime.now(timezone.utc)
+        repo.record_event(depot["id"], "dev-a", "enter", occurred_at=now - timedelta(minutes=50))
+        repo.record_event(yard["id"], "dev-b", "enter", occurred_at=now - timedelta(minutes=10))
+
+        body = (await self.fetch(query=f"?geofence_id={yard['id']}")).json()
+        self.assertEqual([g["name"] for g in body["geofences"]], ["Yard"])
+        self.assertEqual((body["totals"]["entries"], body["totals"]["vehicles"]), (1, 1))
+        self.assertAlmostEqual(body["totals"]["time_inside_minutes"], 10, places=2)
+
     async def test_a_user_sees_only_their_own_geofences_and_vehicles(self):
         token = await self.user_token("owner", ["dev-a"])
         mine = (await self.create({**CIRCLE, "name": "Mine"}, token)).json()

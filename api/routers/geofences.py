@@ -144,6 +144,8 @@ async def geofence_report(
         default=None, description="Window start. Defaults to 24 hours before `until`."
     ),
     until: datetime | None = Query(default=None, description="Window end. Defaults to now."),
+    geofence_id: int | None = Query(default=None, description="Only this geofence."),
+    device_id: str | None = Query(default=None, description="Only this vehicle."),
     user: AuthenticatedUser = Depends(current_user),
     repo: GeofenceRepository = Depends(get_geofences),
 ) -> GeofenceReport:
@@ -153,6 +155,11 @@ async def geofence_report(
     api/geofence_report.py). Scoped like `/events`: an admin sees every
     geofence, anyone else only their own geofences and their own vehicles.
     Quiet geofences are listed too, with zeros.
+
+    `geofence_id` and `device_id` narrow everything -- crossings, times and
+    totals -- the same way they narrow `/events`. With a vehicle, the
+    geofences listed are the ones that vehicle is assigned to or crossed.
+    A geofence or vehicle the caller cannot see reads as an empty report.
     """
     now = datetime.now(timezone.utc)
     until = _aware(until) if until else now
@@ -167,13 +174,29 @@ async def geofence_report(
     events = await repo.list_events(
         owner_id=owner_id,
         device_scope=_device_scope(user),
+        geofence_id=geofence_id,
+        device_id=device_id,
         since=since,
         until=until,
         limit=MAX_REPORT_EVENTS,
     )
-    prior = await repo.last_crossings_before(
-        owner_id=owner_id, device_scope=_device_scope(user), before=since
-    )
+    prior = [
+        event
+        for event in await repo.last_crossings_before(
+            owner_id=owner_id, device_scope=_device_scope(user), before=since
+        )
+        if (geofence_id is None or event.geofence_id == geofence_id)
+        and (device_id is None or event.device_id == device_id)
+    ]
+    if geofence_id is not None:
+        fences = [f for f in fences if f.id == geofence_id]
+    if device_id is not None:
+        scope = _device_scope(user)
+        if scope is not None and device_id not in scope:
+            fences = []
+        else:
+            crossed = {e.geofence_id for e in events} | {e.geofence_id for e in prior}
+            fences = [f for f in fences if device_id in f.device_ids or f.id in crossed]
     stats, time = summarize_geofences(fences, events, since, until, now, prior)
     return GeofenceReport(
         since=since,
