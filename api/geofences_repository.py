@@ -124,6 +124,18 @@ class GeofenceRepository(Protocol):
         """
         ...
 
+    async def last_crossings_before(
+        self,
+        *,
+        owner_id: int | None,
+        device_scope: frozenset[str] | None,
+        before: datetime,
+    ) -> list[GeofenceEventOut]:
+        """Each (geofence, vehicle) pair's newest crossing strictly before
+        `before`, scoped like list_events -- whether a vehicle was inside a
+        geofence when a report window opens."""
+        ...
+
 
 def _points(lats: Sequence[float] | None, lngs: Sequence[float] | None) -> list[GeoPoint] | None:
     if lats is None or lngs is None:
@@ -289,6 +301,17 @@ class InMemoryGeofenceRepository:
             if len(out) >= limit:
                 break
         return out
+
+    async def last_crossings_before(self, *, owner_id, device_scope, before):
+        newest: dict[tuple[int, str], GeofenceEventOut] = {}
+        events = await self.list_events(
+            owner_id=owner_id, device_scope=device_scope, limit=len(self._events) + 1
+        )
+        # Newest first, so the first seen per pair is the one wanted.
+        for event in events:
+            if event.occurred_at < before:
+                newest.setdefault((event.geofence_id, event.device_id), event)
+        return list(newest.values())
 
 
 _FENCE_COLUMNS = """
@@ -505,5 +528,27 @@ class PostgresGeofenceRepository:
                 limit,
                 since,
                 until,
+            )
+        return [GeofenceEventOut(**dict(r)) for r in rows]
+
+    async def last_crossings_before(self, *, owner_id, device_scope, before):
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT ON (e.geofence_id, e.device_id)
+                       e.id, e.geofence_id, g.name AS geofence_name, e.device_id, e.kind,
+                       e.latitude, e.longitude, e.occurred_at,
+                       CASE WHEN e.kind = 'exit' THEN g.alert_on_exit
+                            ELSE g.alert_on_enter END AS alerted
+                FROM geofence_events e
+                JOIN geofences g ON g.id = e.geofence_id
+                WHERE ($1::bigint IS NULL OR g.owner_id = $1)
+                  AND ($2::text[] IS NULL OR e.device_id = ANY($2::text[]))
+                  AND e.occurred_at < $3
+                ORDER BY e.geofence_id, e.device_id, e.occurred_at DESC, e.id DESC
+                """,
+                owner_id,
+                sorted(device_scope) if device_scope is not None else None,
+                before,
             )
         return [GeofenceEventOut(**dict(r)) for r in rows]

@@ -171,7 +171,10 @@ async def geofence_report(
         until=until,
         limit=MAX_REPORT_EVENTS,
     )
-    stats = summarize_geofences(fences, events, since, until, now)
+    prior = await repo.last_crossings_before(
+        owner_id=owner_id, device_scope=_device_scope(user), before=since
+    )
+    stats, time = summarize_geofences(fences, events, since, until, now, prior)
     return GeofenceReport(
         since=since,
         until=until,
@@ -182,6 +185,9 @@ async def geofence_report(
             exits=sum(f.exits for f in stats),
             alerts=sum(f.alerts for f in stats),
             vehicles=len({v for f in stats for v in f.vehicles}),
+            window_minutes=time.window_seconds / 60,
+            time_inside_minutes=time.seconds_inside / 60,
+            time_outside_minutes=time.seconds_outside / 60,
         ),
         geofences=[
             GeofenceReportRow(
@@ -191,6 +197,7 @@ async def geofence_report(
                 exits=f.exits,
                 alerts=f.alerts,
                 time_inside_minutes=f.seconds_inside / 60,
+                time_outside_minutes=f.seconds_outside / 60,
                 last_event_at=f.last_event_at,
                 vehicles=[
                     GeofenceReportVehicle(
@@ -198,6 +205,7 @@ async def geofence_report(
                         entries=v.entries,
                         exits=v.exits,
                         time_inside_minutes=v.seconds_inside / 60,
+                        time_outside_minutes=v.seconds_outside / 60,
                         last_event_at=v.last_event_at,
                     )
                     for v in sorted(
