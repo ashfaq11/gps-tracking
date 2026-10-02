@@ -22,9 +22,10 @@ jobs:
             NEW=$(git rev-parse HEAD)
             CHANGED=$(git diff --name-only $OLD $NEW)
 
-            if echo "$CHANGED" | grep -qE '^requirements'; then
-              pip3 install -r requirements.txt --break-system-packages -q
-            fi
+            # One line per `if`: with script_stop, the action checks the exit
+            # code after every script line, and inside an else branch that
+            # check sees the failed test and stops the deploy.
+            if echo "$CHANGED" | grep -qE '^requirements'; then pip3 install -r requirements.txt --break-system-packages -q; fi
 
             # Database schema: applied only when sql/schema.sql differs from
             # the last version applied successfully here (remembered by its
@@ -32,18 +33,10 @@ jobs:
             # time. ON_ERROR_STOP fails the deploy on a schema error, before
             # anything restarts.
             SCHEMA_HASH=$(sha256sum sql/schema.sql | cut -d' ' -f1)
-            if [ "$SCHEMA_HASH" != "$(cat ~/.gps-schema.sha256 2>/dev/null)" ]; then
-              echo "Applying sql/schema.sql"
-              sudo -u postgres psql -d trackit -v ON_ERROR_STOP=1 -q -f sql/schema.sql
-              echo "$SCHEMA_HASH" > ~/.gps-schema.sha256
-            else
-              echo "sql/schema.sql unchanged; not applied"
-            fi
+            if [ "$SCHEMA_HASH" != "$(cat ~/.gps-schema.sha256 2>/dev/null)" ]; then echo "Applying sql/schema.sql" && sudo -u postgres psql -d trackit -v ON_ERROR_STOP=1 -q -f sql/schema.sql && echo "$SCHEMA_HASH" > ~/.gps-schema.sha256; else echo "sql/schema.sql unchanged; not applied"; fi
 
             sudo systemctl restart gps-api
-            if echo "$CHANGED" | grep -qE '^(gps_gateway/|requirements)'; then
-              sudo systemctl restart gps-gateway
-            fi
+            if echo "$CHANGED" | grep -qE '^(gps_gateway/|requirements)'; then sudo systemctl restart gps-gateway; fi
 
             sleep 4
             curl -fsS http://localhost:8000/api/v1/health
