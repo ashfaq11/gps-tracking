@@ -11,7 +11,7 @@ link, so its tests add trackers explicitly.
 from datetime import datetime, timezone
 from typing import Protocol
 
-from .schemas import AllowedTrackerOut, LoginAttemptOut
+from .schemas import AllowedTrackerOut, LoginAttemptOut, TrackerSettingsOut
 
 
 class TrackerRepository(Protocol):
@@ -34,14 +34,31 @@ class TrackerRepository(Protocol):
         """Most recent attempt first."""
         ...
 
-    async def dismiss_attempt(self, device_id: str) -> bool:
+    async def dismiss_attempt(self, device_id: str) -> bool: ...
+
+    async def settings(self) -> TrackerSettingsOut:
+        """Auto-approve or hold; hold when never set."""
         ...
+
+    async def set_auto_approve(
+        self, enabled: bool, changed_by: int | None, requester: str | None = None
+    ) -> TrackerSettingsOut: ...
 
 
 class InMemoryTrackerRepository:
     def __init__(self) -> None:
         self._allowed: dict[str, AllowedTrackerOut] = {}
         self._attempts: dict[str, LoginAttemptOut] = {}
+        self._settings = TrackerSettingsOut(auto_approve=False)
+
+    async def settings(self) -> TrackerSettingsOut:
+        return self._settings
+
+    async def set_auto_approve(self, enabled, changed_by, requester=None) -> TrackerSettingsOut:
+        self._settings = TrackerSettingsOut(
+            auto_approve=enabled, changed_at=datetime.now(timezone.utc), changed_by=requester
+        )
+        return self._settings
 
     async def list_allowed(self) -> list[AllowedTrackerOut]:
         return sorted(self._allowed.values(), key=lambda t: t.added_at, reverse=True)
@@ -65,6 +82,19 @@ class InMemoryTrackerRepository:
 
     async def dismiss_attempt(self, device_id: str) -> bool:
         return self._attempts.pop(device_id, None) is not None
+
+    def gateway_admit(self, device_id: str, peer: str | None = None) -> bool:
+        """Test hook mirroring sql/schema.sql's gateway_admit()."""
+        if device_id in self._allowed:
+            return True
+        if self._settings.auto_approve:
+            self._attempts.pop(device_id, None)
+            self._allowed[device_id] = AllowedTrackerOut(
+                device_id=device_id, added_at=datetime.now(timezone.utc), source="auto"
+            )
+            return True
+        self.record_attempt(device_id, peer)
+        return False
 
     def record_attempt(self, device_id: str, peer: str | None = None) -> None:
         """Test hook standing in for the gateway's gateway_admit()."""
@@ -151,3 +181,28 @@ class PostgresTrackerRepository:
                 "DELETE FROM device_login_attempts WHERE device_id = $1", device_id
             )
         return result.endswith(" 1")
+
+    async def settings(self) -> TrackerSettingsOut:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT s.auto_approve, s.changed_at, u.username AS changed_by
+                FROM gateway_settings s LEFT JOIN users u ON u.id = s.changed_by
+                """
+            )
+        return TrackerSettingsOut(**dict(row)) if row else TrackerSettingsOut(auto_approve=False)
+
+    async def set_auto_approve(self, enabled, changed_by, requester=None) -> TrackerSettingsOut:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO gateway_settings (id, auto_approve, changed_by, changed_at)
+                VALUES (true, $1, $2, now())
+                ON CONFLICT (id) DO UPDATE
+                SET auto_approve = EXCLUDED.auto_approve,
+                    changed_by = EXCLUDED.changed_by, changed_at = now()
+                """,
+                enabled,
+                changed_by,
+            )
+        return await self.settings()

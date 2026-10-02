@@ -3,7 +3,11 @@ Which trackers may log in: the allowlist in sql/schema.sql (device_allowlist,
 checked and recorded by gateway_admit()).
 
 GT06 has no authentication, so this cannot stop someone who knows an allowed
-IMEI; it stops every IMEI nobody approved. Modes (GATEWAY_ALLOWLIST):
+IMEI; it stops every IMEI nobody approved -- unless an admin switched
+auto-approve on (gateway_settings, PUT /trackers/settings), when
+gateway_admit() admits and allowlists a new IMEI itself. That switch takes
+effect on a tracker's next login attempt: refusals are never cached here.
+Modes (GATEWAY_ALLOWLIST):
 - enforce: an unknown IMEI's login is refused and the connection closed
 - log:     everyone is admitted, unknown IMEIs are still recorded for review
 - off:     no check at all (also what the log sink runs with -- no database)
