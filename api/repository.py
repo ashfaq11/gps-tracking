@@ -8,6 +8,7 @@ lets the API (and its tests) run with no database at all.
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, Protocol
 
+from .driving import ignition_on_spans, score_device
 from .reports import (
     HALT_THRESHOLD,
     MAX_PLAUSIBLE_SPEED_KMH,
@@ -26,8 +27,10 @@ from .reports import (
 )
 from .schemas import (
     DEFAULT_VEHICLE_ICON,
+    DeviceDriving,
     DeviceOut,
     DeviceReport,
+    DrivingEvent,
     DeviceSubscriptionHistoryOut,
     FixBucket,
     LocationIn,
@@ -175,6 +178,18 @@ class LocationRepository(Protocol):
         summary()."""
         ...
 
+    async def driving_report(
+        self,
+        since: datetime,
+        until: datetime,
+        *,
+        speed_limit_kmh: int,
+        device_ids: frozenset[str] | None = None,
+    ) -> list[DeviceDriving]:
+        """Per-vehicle driving behaviour in [since, until], by api/driving.py's
+        rules -- lowest score first. Lapsed subscriptions are left out."""
+        ...
+
     async def ping(self) -> bool: ...
 
     # --- device subscriptions ---
@@ -229,6 +244,37 @@ class LocationRepository(Protocol):
     async def device_id_by_secret_code(self, secret_code: str) -> str | None: ...
 
 
+def _driving_out(
+    device_id: str,
+    fixes: list[ReportFix],
+    flips: list[tuple[datetime, bool]],
+    since: datetime,
+    until: datetime,
+    speed_limit_kmh: int,
+) -> DeviceDriving:
+    """One vehicle's driving report, for either backend."""
+    driving = score_device(
+        fixes,
+        since,
+        until,
+        speed_limit_kmh=speed_limit_kmh,
+        ignition_on=ignition_on_spans(flips, since, until),
+    )
+    fields = {k: v for k, v in vars(driving).items() if k != "events"}
+    return DeviceDriving(
+        device_id=device_id,
+        events=[DrivingEvent(**vars(event)) for event in driving.events],
+        **fields,
+    )
+
+
+def _by_score(reports: list[DeviceDriving]) -> list[DeviceDriving]:
+    """Lowest score first -- the vehicle to look at -- with unscored last."""
+    return sorted(
+        reports, key=lambda r: (r.score is None, r.score if r.score is not None else 0, r.device_id)
+    )
+
+
 class InMemoryLocationRepository:
     """Development and test backend. Not durable, not shared across workers."""
 
@@ -248,6 +294,9 @@ class InMemoryLocationRepository:
         # device_id -> (ignition, ignition_changed_at), mirroring device_status.
         # Only ingest feeds it here; heartbeats reach Postgres alone.
         self._ignition: dict[str, tuple[bool, datetime]] = {}
+        # device_id -> [(when, state)], mirroring device_ignition_log: one
+        # entry per flip, the first report included.
+        self._ignition_log: dict[str, list[tuple[datetime, bool]]] = {}
 
     def _sub_end_date(self, device_id: str) -> datetime | None:
         return self._device_subscriptions.get(device_id, {}).get("subscription_end_date")
@@ -274,6 +323,9 @@ class InMemoryLocationRepository:
             current = self._ignition.get(row.device_id)
             if current is None or current[0] != row.ignition:
                 self._ignition[row.device_id] = (row.ignition, row.received_at)
+                self._ignition_log.setdefault(row.device_id, []).append(
+                    (row.received_at, row.ignition)
+                )
         return row
 
     async def latest_for_device(self, device_id: str) -> LocationOut | None:
@@ -430,6 +482,42 @@ class InMemoryLocationRepository:
             )
             reports.append(DeviceReport(device_id=device_id, **vars(trips)))
         return sorted(reports, key=lambda r: (-r.distance_km, r.device_id))
+
+    async def driving_report(
+        self,
+        since: datetime,
+        until: datetime,
+        *,
+        speed_limit_kmh: int,
+        device_ids: frozenset[str] | None = None,
+    ) -> list[DeviceDriving]:
+        by_device: dict[str, list[tuple[datetime, LocationOut]]] = {}
+        for row in self._rows:
+            if device_ids is not None and row.device_id not in device_ids:
+                continue
+            if not self._sub_active(row.device_id):
+                continue
+            at = fix_time(row.fixed_at, row.received_at)
+            if since <= at <= until:
+                by_device.setdefault(row.device_id, []).append((at, row))
+        end = min(until, datetime.now(timezone.utc))
+        reports = []
+        for device_id, rows in by_device.items():
+            rows.sort(key=lambda pair: (pair[0], pair[1].id))
+            reports.append(
+                _driving_out(
+                    device_id,
+                    [
+                        ReportFix(r.latitude, r.longitude, r.speed_kmh, at, r.gps_fixed)
+                        for at, r in rows
+                    ],
+                    self._ignition_log.get(device_id, []),
+                    since,
+                    end,
+                    speed_limit_kmh,
+                )
+            )
+        return _by_score(reports)
 
     async def ping(self) -> bool:
         return True
@@ -1027,6 +1115,86 @@ class PostgresLocationRepository:
             )
             for r in rows
         ]
+
+    async def driving_report(
+        self,
+        since: datetime,
+        until: datetime,
+        *,
+        speed_limit_kmh: int,
+        device_ids: frozenset[str] | None = None,
+    ) -> list[DeviceDriving]:
+        # The fixes come here and api/driving.py judges them -- unlike
+        # trip_report there is no SQL twin of the rules to keep in step.
+        # The router caps the window (MAX_DRIVING_WINDOW) so this stays a
+        # few days of rows. `at` and the received_at bounds are the same
+        # reports.fix_time arrangement as trip_report's `base`.
+        scope = list(device_ids) if device_ids is not None else None
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT device_id, id, latitude, longitude, speed_kmh, gps_fixed, at
+                FROM (
+                    SELECT device_id, id, latitude, longitude, speed_kmh, gps_fixed,
+                           CASE WHEN fixed_at IS NULL
+                                  OR fixed_at > received_at + $4::interval
+                                  OR fixed_at < received_at - $5::interval
+                                THEN received_at ELSE fixed_at
+                           END                                        AS at
+                    FROM device_locations dl
+                    WHERE received_at >= $1::timestamptz - $4::interval
+                      AND received_at <= $2::timestamptz + $5::interval
+                      AND ($3::text[] IS NULL OR device_id = ANY($3::text[]))
+                      AND NOT EXISTS (
+                          SELECT 1 FROM device_subscriptions ds
+                          WHERE ds.device_id = dl.device_id AND ds.subscription_end_date <= now()
+                      )
+                ) fixes
+                WHERE at >= $1 AND at <= $2
+                ORDER BY device_id, at, id
+                """,
+                since,
+                until,
+                scope,
+                CLOCK_AHEAD_LIMIT,
+                CLOCK_BEHIND_LIMIT,
+            )
+            # Each device's state going into the window (its last flip
+            # before it), then every flip inside.
+            flips = await conn.fetch(
+                """
+                (SELECT DISTINCT ON (device_id) device_id, ignition, at
+                 FROM device_ignition_log
+                 WHERE at < $1 AND ($3::text[] IS NULL OR device_id = ANY($3::text[]))
+                 ORDER BY device_id, at DESC)
+                UNION ALL
+                (SELECT device_id, ignition, at
+                 FROM device_ignition_log
+                 WHERE at >= $1 AND at <= $2
+                   AND ($3::text[] IS NULL OR device_id = ANY($3::text[])))
+                ORDER BY device_id, at
+                """,
+                since,
+                until,
+                scope,
+            )
+        flips_by_device: dict[str, list[tuple[datetime, bool]]] = {}
+        for flip in flips:
+            flips_by_device.setdefault(flip["device_id"], []).append((flip["at"], flip["ignition"]))
+        fixes_by_device: dict[str, list[ReportFix]] = {}
+        for r in rows:
+            fixes_by_device.setdefault(r["device_id"], []).append(
+                ReportFix(r["latitude"], r["longitude"], r["speed_kmh"], r["at"], r["gps_fixed"])
+            )
+        end = min(until, datetime.now(timezone.utc))
+        return _by_score(
+            [
+                _driving_out(
+                    device_id, fixes, flips_by_device.get(device_id, []), since, end, speed_limit_kmh
+                )
+                for device_id, fixes in fixes_by_device.items()
+            ]
+        )
 
     async def ping(self) -> bool:
         async with self._pool.acquire() as conn:

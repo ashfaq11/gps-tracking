@@ -425,6 +425,49 @@ class TripReport(BaseModel):
     devices: list[DeviceReport] = Field(description="Vehicles that reported, longest distance first.")
 
 
+class DrivingEvent(BaseModel):
+    """A stretch of driving worth a second look -- see api/driving.py."""
+
+    kind: Literal["overspeed", "night_drive", "long_idle", "long_halt"]
+    at: datetime = Field(description="When the stretch began.")
+    minutes: float = Field(description="How long it lasted.")
+    max_speed_kmh: int | None = Field(default=None, description="Overspeed only: the fastest reading.")
+
+
+class DeviceDriving(BaseModel):
+    """One vehicle's driving behaviour over a window -- see api/driving.py."""
+
+    device_id: str
+    score: int | None = Field(
+        default=None, description="0-100, higher is better. Null when the vehicle barely drove."
+    )
+    distance_km: float
+    driving_minutes: float
+    max_speed_kmh: int | None = None
+    overspeed_minutes: float = Field(description="Driving time above speed_limit_kmh.")
+    night_minutes: float = Field(description="Driving time between 23:00 and 05:00 IST.")
+    sudden_stops: int = Field(
+        description="Speed falling 40+ km/h between two fixes at most 15 s apart -- a firm "
+        "stop as a ten-second tracker sees it, not accelerometer-grade harsh braking."
+    )
+    sudden_starts: int
+    idle_minutes: float | None = Field(
+        default=None,
+        description="Ignition on and not driving. Null when the vehicle has no ignition "
+        "history yet: unknown, not zero.",
+    )
+    events: list[DrivingEvent] = Field(description="Newest first.")
+
+
+class DrivingReport(BaseModel):
+    since: datetime
+    until: datetime
+    speed_limit_kmh: int
+    devices: list[DeviceDriving] = Field(
+        description="Vehicles that reported; lowest score first, unscored ones last."
+    )
+
+
 # --- dashboard accounts -----------------------------------------------------
 
 Role = Literal["admin", "user"]

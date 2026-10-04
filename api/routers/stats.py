@@ -11,8 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..deps import current_user, get_repository
 from ..repository import LocationRepository
+from ..driving import DEFAULT_SPEED_LIMIT_KMH, MAX_DRIVING_WINDOW
 from ..reports import HALT_THRESHOLD
-from ..schemas import FixBucket, ReportTotals, StatsSummary, TripReport
+from ..schemas import DrivingReport, FixBucket, ReportTotals, StatsSummary, TripReport
 from ..users_repository import AuthenticatedUser
 
 router = APIRouter(prefix="/stats", tags=["stats"])
@@ -126,6 +127,47 @@ async def trip_report(
             no_data_minutes=sum(d.no_data_minutes for d in devices),
         ),
         devices=devices,
+    )
+
+
+@router.get(
+    "/driving",
+    response_model=DrivingReport,
+    summary="Driving behaviour -- a score and the stretches behind it -- per vehicle",
+)
+async def driving_report(
+    since: datetime | None = Query(
+        default=None, description="Window start. Defaults to 24 hours before `until`."
+    ),
+    until: datetime | None = Query(default=None, description="Window end. Defaults to now."),
+    speed_limit_kmh: int = Query(
+        default=DEFAULT_SPEED_LIMIT_KMH,
+        ge=20,
+        le=160,
+        description="Driving faster than this counts as overspeed.",
+    ),
+    user: AuthenticatedUser = Depends(current_user),
+    repo: LocationRepository = Depends(get_repository),
+) -> DrivingReport:
+    """
+    Per-vehicle driving score (0-100) with what went into it -- overspeed,
+    night driving, sudden stops and starts, idling -- and the stretches worth
+    a look: sustained overspeed, night drives, long idles, a vehicle parked
+    for a day or more. Rules are in api/driving.py. Scoped like `/report`.
+    """
+    until = _aware(until) if until else datetime.now(timezone.utc)
+    since = _aware(since) if since else until - timedelta(hours=24)
+    if since >= until:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "`since` must be before `until`.")
+    if until - since > MAX_DRIVING_WINDOW:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "A driving report covers at most 8 days."
+        )
+    devices = await repo.driving_report(
+        since, until, speed_limit_kmh=speed_limit_kmh, device_ids=_scope(user)
+    )
+    return DrivingReport(
+        since=since, until=until, speed_limit_kmh=speed_limit_kmh, devices=devices
     )
 
 

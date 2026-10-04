@@ -471,6 +471,56 @@ CREATE TRIGGER device_locations_record_ignition
     FOR EACH ROW WHEN (NEW.ignition IS NOT NULL)
     EXECUTE FUNCTION record_row_ignition();
 
+-- Ignition history: one row per flip, the first report included.
+--
+-- device_status only knows *now*. How long an engine sat running with the
+-- vehicle parked -- the driving report's idle time, api/driving.py -- needs
+-- every switch-on and switch-off, so they are kept here. Written by a
+-- trigger on device_status rather than inside record_ignition(), so that
+-- function stays the single small statement it is, and anything else that
+-- ever writes device_status is logged too.
+--
+-- The log starts when this table is created: a vehicle's earlier ignition
+-- is unknown, which the report says as such rather than as "never idled".
+CREATE TABLE IF NOT EXISTS device_ignition_log (
+    id        BIGSERIAL PRIMARY KEY,
+    device_id TEXT        NOT NULL,
+    ignition  BOOLEAN     NOT NULL,
+    at        TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS device_ignition_log_device_at_idx
+    ON device_ignition_log (device_id, at);
+
+-- SECURITY DEFINER for the same reason as record_ignition(): whoever
+-- writes a heartbeat must be able to log it without a grant of their own.
+CREATE OR REPLACE FUNCTION log_ignition_change() RETURNS trigger AS $$
+BEGIN
+    INSERT INTO device_ignition_log (device_id, ignition, at)
+    VALUES (NEW.device_id, NEW.ignition, NEW.ignition_changed_at);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+DROP TRIGGER IF EXISTS device_status_log_first ON device_status;
+CREATE TRIGGER device_status_log_first
+    AFTER INSERT ON device_status
+    FOR EACH ROW EXECUTE FUNCTION log_ignition_change();
+
+DROP TRIGGER IF EXISTS device_status_log_flip ON device_status;
+CREATE TRIGGER device_status_log_flip
+    AFTER UPDATE ON device_status
+    FOR EACH ROW WHEN (OLD.ignition IS DISTINCT FROM NEW.ignition)
+    EXECUTE FUNCTION log_ignition_change();
+
+-- Vehicles already known when the log is created start from their current
+-- state, so an engine that is running right now is not missed until its
+-- next switch. Only for a device with no log yet, so re-running is a no-op.
+INSERT INTO device_ignition_log (device_id, ignition, at)
+SELECT s.device_id, s.ignition, s.ignition_changed_at
+FROM device_status s
+WHERE NOT EXISTS (SELECT 1 FROM device_ignition_log l WHERE l.device_id = s.device_id);
+
 -- The API reads device_status (the device list shows ignition). Same
 -- ownership problem, and same fix, as the geofence grants at the end.
 DO $grant_device_status$
@@ -487,7 +537,7 @@ BEGIN
             WHERE c.relname = 'device_locations' AND a.privilege_type = 'INSERT' AND a.grantee <> 0
         ) AS writers
     LOOP
-        EXECUTE format('GRANT SELECT ON device_status TO %s', r.who);
+        EXECUTE format('GRANT SELECT ON device_status, device_ignition_log TO %s', r.who);
     END LOOP;
 END
 $grant_device_status$;
