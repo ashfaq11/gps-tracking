@@ -43,7 +43,9 @@ INGEST_API_KEY=<a long random string>
 BOOTSTRAP_ADMIN_USERNAME=admin
 BOOTSTRAP_ADMIN_PASSWORD=<a strong password>
 
-# Optional: Web Push (python -m api.push genkey), CORS for a direct-origin dashboard
+# Optional: Web Push (python -m api.push genkey), CORS for a direct-origin dashboard.
+# The GitHub deploy (systemd setup) adds the VAPID pair itself on first run
+# -- see deploy/aws/ensure-vapid.sh -- and never replaces it afterwards.
 # VAPID_PUBLIC_KEY=...
 # VAPID_PRIVATE_KEY=...
 # VAPID_SUBJECT=mailto:you@example.com

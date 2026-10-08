@@ -35,6 +35,10 @@ jobs:
             SCHEMA_HASH=$(sha256sum sql/schema.sql | cut -d' ' -f1)
             if [ "$SCHEMA_HASH" != "$(cat ~/.gps-schema.sha256 2>/dev/null)" ]; then echo "Applying sql/schema.sql" && sudo -u postgres psql -d trackit -v ON_ERROR_STOP=1 -q -f sql/schema.sql && echo "$SCHEMA_HASH" > ~/.gps-schema.sha256; else echo "sql/schema.sql unchanged; not applied"; fi
 
+            # Web Push keys: generated once, on this server, into the env file
+            # gps-api reads (never printed); a no-op once they exist.
+            ./deploy/aws/ensure-vapid.sh
+
             sudo systemctl restart gps-api
             if echo "$CHANGED" | grep -qE '^(gps_gateway/|requirements)'; then sudo systemctl restart gps-gateway; fi
 
