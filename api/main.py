@@ -177,6 +177,19 @@ async def lifespan(app: FastAPI):
         await close_repository(app)
 
 
+# The iOS app's WebView origin (Capacitor serves the app from
+# capacitor://localhost; Android's is http://localhost, which deployments
+# already list). Added to any configured CORS list so the iOS build works
+# without editing every server's environment. No web page can have this
+# origin, so it opens nothing up to websites.
+NATIVE_APP_ORIGINS = ("capacitor://localhost",)
+
+
+def cors_allow_origins(configured: list[str]) -> list[str]:
+    """The configured CORS origins plus the native app ones, once each."""
+    return configured + [o for o in NATIVE_APP_ORIGINS if o not in configured]
+
+
 def create_app(config: ApiConfig | None = None) -> FastAPI:
     config = config or ApiConfig.from_env()
     app = FastAPI(
@@ -200,11 +213,12 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     if config.cors_origins:
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=config.cors_origins,
+            allow_origins=cors_allow_origins(config.cors_origins),
             # PATCH is needed by the account screens; without it the browser's
             # preflight fails and editing a user looks like a network error.
-            # DELETE for removing a geofence.
-            allow_methods=["GET", "POST", "PATCH", "DELETE"],
+            # DELETE for removing a geofence; PUT for tracker settings,
+            # engine cut-off and device subscriptions.
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
             allow_headers=["*"],
         )
 
