@@ -138,6 +138,19 @@ device_subscriptions.x)` for those two columns only. `clear_device_subscription`
 clears `subscription_end_date` with an `UPDATE`, not a `DELETE`, so the
 other two dates survive lifting metering.
 
+**Device shop: customers order trackers in the app, cash on delivery.**
+`device_products` (admin-managed, hidden rather than deleted) and
+`device_orders` + `device_order_events` (the timeline) in `shop_repository.py`;
+the rules live once in `routers/shop.py`. An order keeps the product's name
+and price from when it was placed. Customers see only their own orders (404
+for not yours) and may cancel while `placed`; admins move it placed ->
+confirmed -> shipped -> delivered or cancel it, and `delivered`/`cancelled`
+are final. IMEIs entered on a shipped/delivered order are claimed for the
+customer via `claim_device` -- checked all first, so an IMEI owned by
+someone else refuses the change (409) with nothing half-assigned. No
+payment gateway: each charges a per-payment fee. `tests/test_shop.py` also
+runs against Postgres when `TEST_PG_DSN` is set.
+
 **Per-account device scoping is enforced in the routers, not just the
 frontend.** `AuthenticatedUser.devices` (empty for an admin's unlimited
 access, otherwise the assigned list) is applied in every router that touches

@@ -1038,6 +1038,20 @@ class TestSignupAndClaim(ApiTestCase):
         )
         self.assertEqual([d["device_id"] for d in listing.json()], [FIX["device_id"]])
 
+    async def test_signup_without_a_device_starts_an_empty_account(self):
+        # Someone with no tracker yet, signing up to order one in the app.
+        response = await self.client.post(
+            f"{BASE}/auth/signup",
+            json={"username": "newbie", "password": "a-good-passphrase"},
+        )
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body["user"]["devices"], [])
+        listing = await self.client.get(
+            f"{BASE}/devices", headers={"Authorization": f"Bearer {body['token']}"}
+        )
+        self.assertEqual(listing.json(), [])
+
     async def test_signup_rejects_a_device_that_has_never_reported(self):
         response = await self.client.post(
             f"{BASE}/auth/signup",

@@ -7,11 +7,13 @@ from .config import ApiConfig
 from .repository import LocationRepository
 from .commands_repository import CommandRepository
 from .geofences_repository import GeofenceRepository
+from .shop_repository import ShopRepository
 from .trackers_repository import TrackerRepository
 from .state import (
     ensure_commands,
     ensure_geofences,
     ensure_repository,
+    ensure_shop,
     ensure_trackers,
     ensure_users,
 )
@@ -86,6 +88,11 @@ async def get_commands(request: Request) -> CommandRepository:
 async def get_trackers(request: Request) -> TrackerRepository:
     """Built on first use, sharing the location repository's pool."""
     return await ensure_trackers(request.app)
+
+
+async def get_shop(request: Request) -> ShopRepository:
+    """Built on first use, sharing the location repository's pool."""
+    return await ensure_shop(request.app)
 
 
 async def get_users(request: Request) -> UserRepository:
