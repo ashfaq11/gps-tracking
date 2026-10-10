@@ -306,7 +306,7 @@ class TestShopPostgres(TestShop):
         try:
             await conn.execute(
                 "TRUNCATE device_order_events, device_orders, device_products, "
-                "device_claims, user_devices, user_sessions, users RESTART IDENTITY CASCADE"
+                "device_claims, user_devices, user_sessions, users CASCADE"
             )
         finally:
             await conn.close()
