@@ -1097,3 +1097,128 @@ class RelayStateOut(BaseModel):
     changed_at: datetime | None = None
     changed_by: str | None = Field(default=None, description="Username of who last switched it.")
     commands: list[DeviceCommandOut] = Field(default_factory=list, description="Newest first.")
+
+
+# --- Device shop -------------------------------------------------------------
+
+OrderStatus = Literal["placed", "confirmed", "shipped", "delivered", "cancelled"]
+ORDER_DEVICE_ID = Annotated[str, Field(pattern=r"^\d{8,20}$")]
+
+
+class ProductIn(BaseModel):
+    """A tracker to put on sale."""
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "name": "GT06 GPS tracker",
+                    "description": "Wired tracker with engine cut-off relay. 1 year SIM included.",
+                    "price": 2499,
+                }
+            ]
+        }
+    }
+
+    name: str = Field(min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+    price: float = Field(ge=0, le=1_000_000, description="Rupees.")
+    active: bool = Field(default=True, description="Shown to customers.")
+
+
+class ProductUpdate(BaseModel):
+    """Only the fields sent change. A new price applies to new orders only."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+    price: float | None = Field(default=None, ge=0, le=1_000_000)
+    active: bool | None = None
+
+
+class ProductOut(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    price: float
+    active: bool
+    created_at: datetime
+
+
+class OrderCreate(BaseModel):
+    """Order trackers for delivery. Paid cash on delivery."""
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "product_id": 1,
+                    "quantity": 1,
+                    "contact_name": "Ravi Kumar",
+                    "phone": "+91 98450 12345",
+                    "address": "12, 4th Cross, Indiranagar",
+                    "city": "Bengaluru",
+                    "state": "Karnataka",
+                    "pincode": "560038",
+                }
+            ]
+        }
+    }
+
+    product_id: int
+    quantity: int = Field(default=1, ge=1, le=10)
+    contact_name: str = Field(min_length=1, max_length=80)
+    phone: str = Field(pattern=r"^\+?[0-9][0-9 \-]{6,18}$", description="Delivery contact.")
+    address: str = Field(min_length=3, max_length=300)
+    city: str = Field(min_length=1, max_length=80)
+    state: str | None = Field(default=None, max_length=80)
+    pincode: str = Field(pattern=r"^[0-9]{6}$", description="Six-digit PIN code.")
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class OrderUpdate(BaseModel):
+    """
+    Admin: move an order along, or note its courier tracking. Only the fields
+    sent change. `device_ids` on a shipped or delivered order are claimed for
+    the customer, so the trackers appear in their account.
+    """
+
+    status: OrderStatus | None = None
+    note: str | None = Field(
+        default=None, max_length=300, description="Shown on this status change in the timeline."
+    )
+    tracking: str | None = Field(default=None, max_length=120)
+    admin_note: str | None = Field(default=None, max_length=500)
+    device_ids: list[ORDER_DEVICE_ID] | None = Field(default=None, max_length=10)
+
+
+class OrderEventOut(BaseModel):
+    status: OrderStatus
+    note: str | None = None
+    changed_by: str | None = Field(default=None, description="Username, if not the customer.")
+    changed_at: datetime
+
+
+class OrderOut(BaseModel):
+    id: int
+    user_id: int
+    username: str | None = None
+    product_id: int
+    product_name: str
+    unit_price: float
+    quantity: int
+    total: float
+    contact_name: str
+    phone: str
+    address: str
+    city: str
+    state: str | None = None
+    pincode: str
+    notes: str | None = None
+    payment_method: Literal["cod"] = "cod"
+    status: OrderStatus
+    tracking: str | None = None
+    admin_note: str | None = Field(default=None, description="Visible to admins only.")
+    device_ids: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    events: list[OrderEventOut] = Field(default_factory=list, description="Oldest first.")

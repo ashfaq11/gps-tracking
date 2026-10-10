@@ -14,6 +14,11 @@ import logging
 from fastapi import FastAPI, HTTPException, status
 
 from .config import ApiConfig
+from .shop_repository import (
+    InMemoryShopRepository,
+    PostgresShopRepository,
+    ShopRepository,
+)
 from .trackers_repository import (
     InMemoryTrackerRepository,
     PostgresTrackerRepository,
@@ -148,6 +153,18 @@ async def ensure_trackers(app: FastAPI) -> TrackerRepository:
     return app.state.trackers
 
 
+async def ensure_shop(app: FastAPI) -> ShopRepository:
+    """The device shop (products and orders), sharing the location
+    repository's pool."""
+    await ensure_repository(app)
+    if app.state.shop is None:
+        pool = app.state.pool
+        app.state.shop = (
+            PostgresShopRepository(pool) if pool is not None else InMemoryShopRepository()
+        )
+    return app.state.shop
+
+
 async def _bootstrap_admin(config: ApiConfig, users: UserRepository) -> None:
     """
     Seed the first admin so a fresh database is reachable at all.
@@ -181,6 +198,7 @@ async def close_repository(app: FastAPI) -> None:
     app.state.geofences = None
     app.state.commands = None
     app.state.trackers = None
+    app.state.shop = None
     app.state.pool = None
     if pool is not None:
         await pool.close()
@@ -192,6 +210,7 @@ def init_state(app: FastAPI) -> None:
     app.state.geofences = None
     app.state.commands = None
     app.state.trackers = None
+    app.state.shop = None
     app.state.pool = None
     # Created here rather than in lifespan, which may never run.
     app.state.repository_lock = asyncio.Lock()
