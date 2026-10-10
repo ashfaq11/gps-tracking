@@ -108,7 +108,7 @@ async def claim_or_conflict(
     "/auth/signup",
     response_model=LoginResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create an account and claim a device with it",
+    summary="Create an account, claiming a device with it if given",
     response_description="The new account, signed in -- same body as /auth/login.",
     responses={
         404: {"description": "That device has never reported a position."},
@@ -124,7 +124,8 @@ async def signup(
     """
     Self-service onboarding: one call creates the account, claims the tracker
     and signs the person in, so they land on a dashboard already showing
-    their vehicle.
+    their vehicle. Without `device_id` the account starts empty -- for
+    someone who has no tracker yet and will order one (`POST /shop/orders`).
 
     There is no activation code -- first claim wins -- so two rules do the
     work instead: the device must already have reported a position, and a
@@ -160,11 +161,12 @@ async def signup(
     # someone could sign up again with a fresh device once it is actually
     # theirs, and would otherwise find the username already taken by their
     # own failed attempt.
-    try:
-        await claim_or_conflict(payload.device_id, created.id, users, repo)
-    except HTTPException:
-        await users.delete_user(created.id)
-        raise
+    if payload.device_id:
+        try:
+            await claim_or_conflict(payload.device_id, created.id, users, repo)
+        except HTTPException:
+            await users.delete_user(created.id)
+            raise
 
     started = await users.start_session(
         payload.username, payload.password, timedelta(hours=config.session_ttl_hours)

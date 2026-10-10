@@ -635,7 +635,9 @@ class SelfUpdate(BaseModel):
 
 class SignupRequest(BaseModel):
     """
-    Self-service signup: create an account and claim one device with it.
+    Self-service signup: create an account, and claim a device with it if
+    the person already has one. Without `device_id` the account starts with
+    no vehicle -- for someone signing up to order a tracker in the app.
 
     The device is proof of nothing on its own -- there is no activation code
     -- so the rule is first claim wins, narrowed by two things the API
@@ -670,8 +672,14 @@ class SignupRequest(BaseModel):
     full_name: str | None = Field(default=None, max_length=120)
     email: Emailish = None
     mobile: Mobileish = None
-    device_id: str = Field(
-        min_length=1, max_length=64, description="The IMEI printed on the tracker."
+    device_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "The IMEI printed on the tracker. Leave out to sign up without one "
+            "(to order a tracker in the app)."
+        ),
     )
 
 
