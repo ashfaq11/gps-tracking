@@ -1146,3 +1146,32 @@ CREATE TABLE IF NOT EXISTS device_order_events (
 
 CREATE INDEX IF NOT EXISTS device_order_events_order_idx
     ON device_order_events (order_id, changed_at);
+
+-- Same as the geofence tables: this file is applied as a superuser, so the
+-- shop tables end up owned by it and closed to the API's own user, and
+-- every product or order request would fail with "permission denied". The
+-- API's user (device_locations' owner, or anyone granted INSERT on it) gets
+-- them. Re-running this is harmless.
+DO $grant_shop$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT DISTINCT who FROM (
+            SELECT c.relowner::regrole::text AS who
+            FROM pg_class c WHERE c.relname = 'device_locations'
+            UNION
+            SELECT a.grantee::regrole::text
+            FROM pg_class c, aclexplode(c.relacl) a
+            WHERE c.relname = 'device_locations' AND a.privilege_type = 'INSERT' AND a.grantee <> 0
+        ) AS writers
+    LOOP
+        EXECUTE format(
+            'GRANT SELECT, INSERT, UPDATE, DELETE ON device_products, device_orders, '
+            'device_order_events TO %s', r.who);
+        EXECUTE format(
+            'GRANT USAGE, SELECT ON SEQUENCE device_products_id_seq, device_orders_id_seq, '
+            'device_order_events_id_seq TO %s', r.who);
+    END LOOP;
+END
+$grant_shop$;
