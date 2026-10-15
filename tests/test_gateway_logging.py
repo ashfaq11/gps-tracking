@@ -24,6 +24,7 @@ class TestGatewayLogging(unittest.TestCase):
         self.root.handlers, self.root.level = self._saved
         self.messages.handlers, self.messages.propagate = self._saved_messages
         self.messages.disabled = False
+        self.messages.setLevel(logging.NOTSET)
 
     def _file_handlers(self):
         return [
@@ -43,7 +44,7 @@ class TestGatewayLogging(unittest.TestCase):
     def test_writes_records_to_a_daily_rotating_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_dir = os.path.join(tmp, "nested", "logs")
-            configure_logging(Config(log_dir=log_dir, log_retention_days=14))
+            configure_logging(Config(log_dir=log_dir, log_retention_days=14, log_level="INFO"))
 
             (handler,) = self._file_handlers()
             self.assertEqual(handler.backupCount, 14)
@@ -54,6 +55,20 @@ class TestGatewayLogging(unittest.TestCase):
             with open(os.path.join(log_dir, LOG_FILE_NAME), encoding="utf-8") as f:
                 self.assertIn("[gps_gateway.test] device 123 logged in", f.read())
             handler.close()
+
+    def test_only_errors_and_no_packet_log_by_default(self):
+        config = Config.from_env({})
+        self.assertEqual(config.log_level, "ERROR")
+        self.assertFalse(config.message_log)
+        configure_logging(Config(log_dir=""))
+        self.assertFalse(logging.getLogger("gps_gateway.session").isEnabledFor(logging.WARNING))
+        self.assertTrue(logging.getLogger("gps_gateway.session").isEnabledFor(logging.ERROR))
+        self.assertTrue(self.messages.disabled)
+
+    def test_packet_log_still_writes_when_turned_on(self):
+        configure_logging(Config(log_dir="", message_log=True))
+        self.assertFalse(self.messages.disabled)
+        self.assertTrue(self.messages.isEnabledFor(logging.INFO))
 
     def test_empty_log_dir_disables_file_logging(self):
         configure_logging(Config(log_dir=""))

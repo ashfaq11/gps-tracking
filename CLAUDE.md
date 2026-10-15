@@ -203,7 +203,9 @@ application-code logs, via a formatter installed in `python -m api`'s
 startup. Log levels are tuned so the stream stays readable: `/health` is
 DEBUG (load balancers poll constantly), 4xx is WARNING, 5xx is ERROR with a
 traceback, but the client only ever sees `{"detail": ..., "request_id": ...}`
-— internal detail never reaches the response.
+— internal detail never reaches the response. Both processes default to
+`ERROR` (`API_LOG_LEVEL` / `GATEWAY_LOG_LEVEL` lower it), and the gateway's
+per-packet message log is off unless `GATEWAY_MESSAGE_LOG=on`.
 
 **Schema is one hand-applied, idempotent file — no migration tool.**
 `sql/schema.sql` uses `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT

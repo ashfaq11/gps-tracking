@@ -31,13 +31,13 @@ class TestApiLogFile(unittest.TestCase):
     def test_writes_ist_stamped_lines_with_the_request_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             _configure_logging(ApiConfig(log_dir=tmp))
-            logging.getLogger("api.test").warning("hello from a test")
+            logging.getLogger("api.test").error("hello from a test")
             for handler in self.root.handlers:
                 handler.flush()
             with open(os.path.join(tmp, LOG_FILE_NAME), encoding="utf-8") as f:
                 text = f.read()
             self.assertRegex(
-                text, r"\d\d:\d\d:\d\d IST WARNING \[api\.test\] \[-\] hello from a test"
+                text, r"\d\d:\d\d:\d\d IST ERROR   \[api\.test\] \[-\] hello from a test"
             )
             rotating = [h for h in self.root.handlers if hasattr(h, "backupCount")]
             self.assertEqual(rotating[0].backupCount, 30)
@@ -47,6 +47,15 @@ class TestApiLogFile(unittest.TestCase):
             ApiConfig.from_env({"API_LOG_RETENTION_DAYS": "90"}).log_retention_days, 30
         )
         self.assertEqual(ApiConfig.from_env({}).log_retention_days, 30)
+
+    def test_only_errors_by_default(self):
+        _configure_logging(ApiConfig(log_dir=""))
+        self.assertFalse(logging.getLogger("api.access").isEnabledFor(logging.WARNING))
+        self.assertTrue(logging.getLogger("api.access").isEnabledFor(logging.ERROR))
+
+    def test_level_can_be_raised_and_ignores_nonsense(self):
+        self.assertEqual(ApiConfig.from_env({"API_LOG_LEVEL": "info"}).log_level, "INFO")
+        self.assertEqual(ApiConfig.from_env({"API_LOG_LEVEL": "loud"}).log_level, "ERROR")
 
 
 if __name__ == "__main__":

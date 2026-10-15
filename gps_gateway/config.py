@@ -8,6 +8,12 @@ from dataclasses import dataclass
 MAX_LOG_RETENTION_DAYS = 30
 
 
+def _log_level(value: str | None, default: str) -> str:
+    """A logging level name (`ERROR`, `INFO`, ...); anything unknown is the default."""
+    name = (value or "").strip().upper()
+    return name if name in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL") else default
+
+
 def _flag(value: str | None, default: bool) -> bool:
     if value is None or value.strip() == "":
         return default
@@ -50,9 +56,13 @@ class Config:
     # is capped at MAX_LOG_RETENTION_DAYS.
     log_dir: str = "logs"
     log_retention_days: int = 30
+    # Only errors by default; GATEWAY_LOG_LEVEL=INFO brings back connects,
+    # logins and the like.
+    log_level: str = "ERROR"
     # gateway-messages.log: one human-readable line per packet received
-    # (see message_log.py). message_log_raw appends each packet's hex too.
-    message_log: bool = True
+    # (see message_log.py). Off by default -- turn it on to debug a tracker.
+    # message_log_raw appends each packet's hex too.
+    message_log: bool = False
     message_log_raw: bool = False
     # How long to wait for a tracker to answer a command (engine cut-off /
     # restore) before recording it as failed with 'no_reply'. A late answer
@@ -82,6 +92,7 @@ class Config:
             flush_interval_s=float(env.get("GATEWAY_FLUSH_INTERVAL", cls.flush_interval_s)),
             queue_max=int(env.get("GATEWAY_QUEUE_MAX", cls.queue_max)),
             log_dir=env.get("GATEWAY_LOG_DIR", cls.log_dir),
+            log_level=_log_level(env.get("GATEWAY_LOG_LEVEL"), cls.log_level),
             log_retention_days=min(
                 MAX_LOG_RETENTION_DAYS,
                 max(1, int(env.get("GATEWAY_LOG_RETENTION_DAYS", cls.log_retention_days))),

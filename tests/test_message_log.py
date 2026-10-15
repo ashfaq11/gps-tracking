@@ -107,8 +107,9 @@ class TestConfig(unittest.TestCase):
         )
         self.assertEqual(Config.from_env({"GATEWAY_LOG_RETENTION_DAYS": "7"}).log_retention_days, 7)
 
-    def test_message_log_can_be_switched_off(self):
-        self.assertTrue(Config.from_env({}).message_log)
+    def test_message_log_is_off_unless_switched_on(self):
+        self.assertFalse(Config.from_env({}).message_log)
+        self.assertTrue(Config.from_env({"GATEWAY_MESSAGE_LOG": "on"}).message_log)
         self.assertFalse(Config.from_env({"GATEWAY_MESSAGE_LOG": "off"}).message_log)
 
 
@@ -129,10 +130,11 @@ class TestFiles(unittest.TestCase):
         self.root.handlers, self.messages.handlers = self.saved[0], self.saved[1]
         self.messages.propagate = self.saved[2]
         self.messages.disabled = False
+        self.messages.setLevel(logging.NOTSET)
 
     def test_packets_go_to_their_own_file_with_an_ist_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:
-            configure_logging(Config(log_dir=tmp, log_retention_days=30))
+            configure_logging(Config(log_dir=tmp, log_retention_days=30, message_log=True))
             log_event("OUT", "868720065896205", "LOGIN OK", "accepted")
             for handler in self.messages.handlers:
                 handler.flush()

@@ -137,8 +137,11 @@ $C exec gateway ls logs                                         # older days: *.
 $C exec api tail -f logs/api.log
 ```
 
-Set `GATEWAY_MESSAGE_LOG_RAW=1` in the env file to add each packet's raw hex
-to its line, when a new tracker model needs checking byte by byte.
+Both services log errors only by default. To investigate, set
+`API_LOG_LEVEL=INFO` / `GATEWAY_LOG_LEVEL=INFO` in the env file, and
+`GATEWAY_MESSAGE_LOG=on` for the per-packet `gateway-messages.log`
+(`GATEWAY_MESSAGE_LOG_RAW=1` adds each packet's raw hex, when a new tracker
+model needs checking byte by byte), then redeploy.
 
 **Roll back:** check out an earlier commit and deploy it as it is.
 

@@ -8,6 +8,12 @@ from dataclasses import dataclass, field
 MAX_LOG_RETENTION_DAYS = 30
 
 
+def _log_level(value: str | None, default: str) -> str:
+    """A logging level name (`ERROR`, `INFO`, ...); anything unknown is the default."""
+    name = (value or "").strip().upper()
+    return name if name in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL") else default
+
+
 @dataclass(frozen=True)
 class ApiConfig:
     host: str = "127.0.0.1"
@@ -54,6 +60,9 @@ class ApiConfig:
     # disables the file (console only).
     log_dir: str = "logs"
     log_retention_days: int = 30
+    # Only errors by default, so the console and api.log hold what needs
+    # looking at; API_LOG_LEVEL=INFO brings back the per-request lines.
+    log_level: str = "ERROR"
 
     @classmethod
     def from_env(cls, env=None) -> "ApiConfig":
@@ -74,6 +83,7 @@ class ApiConfig:
             vapid_subject=env.get("VAPID_SUBJECT", cls.vapid_subject),
             slow_request_ms=float(env.get("API_SLOW_REQUEST_MS", cls.slow_request_ms)),
             log_dir=env.get("API_LOG_DIR", cls.log_dir),
+            log_level=_log_level(env.get("API_LOG_LEVEL"), cls.log_level),
             log_retention_days=min(
                 MAX_LOG_RETENTION_DAYS,
                 max(1, int(env.get("API_LOG_RETENTION_DAYS", cls.log_retention_days))),
