@@ -300,6 +300,11 @@ Both processes write log files under `logs/` (relative to the working
 directory; override with `GATEWAY_LOG_DIR` / `API_LOG_DIR`, empty for console
 only). Timestamps in the files are IST.
 
+Both log **errors only** by default, so the console and the files hold just
+what needs looking at. Set `API_LOG_LEVEL` / `GATEWAY_LOG_LEVEL` to `INFO`
+(or `WARNING`, `DEBUG`) to see requests, connects and logins again while
+investigating something.
+
 | File | Written by | What |
 |---|---|---|
 | `gateway-messages.log` | gateway | every packet a tracker sends, one human-readable line each (login, location with a map link, heartbeat with ignition/battery/GSM, alarm, cell-only position, command reply, unknown packets as hex), plus commands sent and refused logins |
@@ -316,8 +321,8 @@ Each file rolls over at midnight to `<name>.YYYY-MM-DD`, and rotated files
 older than `GATEWAY_LOG_RETENTION_DAYS` / `API_LOG_RETENTION_DAYS` (default
 30, and never more than 30) are deleted at each rollover -- no cron job or
 logrotate needed. If a directory cannot be written, the process logs a
-warning and carries on with console output only. The message log is on by
-default (`GATEWAY_MESSAGE_LOG=off` to stop it); `GATEWAY_MESSAGE_LOG_RAW=1`
+warning and carries on with console output only. The message log is off by
+default (`GATEWAY_MESSAGE_LOG=on` to debug a tracker); `GATEWAY_MESSAGE_LOG_RAW=1`
 adds each packet's raw hex, for checking a new tracker model byte by byte.
 On Vercel the API has no writable log directory and logs to the console.
 
@@ -491,10 +496,12 @@ is the safe setting.
 | `GATEWAY_QUEUE_MAX` | `10000` | gateway, fixes waiting to be written before sessions stop reading their sockets |
 | `GATEWAY_LOG_DIR` | `logs` | gateway, directory for `gateway.log` and `gateway-messages.log`; set empty to log to the console only |
 | `GATEWAY_LOG_RETENTION_DAYS` | `30` | gateway, days of rotated log files kept (at most 30) |
-| `GATEWAY_MESSAGE_LOG` | `on` | gateway, one readable line per tracker packet in `gateway-messages.log` |
+| `GATEWAY_LOG_LEVEL` | `ERROR` | gateway, lowest level logged (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `GATEWAY_MESSAGE_LOG` | `off` | gateway, one readable line per tracker packet in `gateway-messages.log` |
 | `GATEWAY_MESSAGE_LOG_RAW` | `off` | gateway, also append each packet's raw hex |
 | `API_LOG_DIR` | `logs` | api (`python -m api`), directory for `api.log`; empty for console only |
 | `API_LOG_RETENTION_DAYS` | `30` | api, days of rotated log files kept (at most 30) |
+| `API_LOG_LEVEL` | `ERROR` | api, lowest level logged (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `PG_DSN` | `postgresql://user:pass@localhost:5432/gps` | both |
 | `API_HOST` / `API_PORT` | `127.0.0.1` / `55920` | api |
 | `API_BACKEND` | `postgres` | api (`postgres` or `memory`) |

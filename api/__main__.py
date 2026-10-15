@@ -39,7 +39,7 @@ def _configure_logging(config: ApiConfig) -> None:
     handler.addFilter(RequestIdFilter())
     root = logging.getLogger()
     root.handlers = [handler]
-    root.setLevel(logging.INFO)
+    root.setLevel(config.log_level)
     # Uvicorn's own access log duplicates api.access, which carries more.
     logging.getLogger("uvicorn.access").disabled = True
 
@@ -72,7 +72,7 @@ def _configure_logging(config: ApiConfig) -> None:
 def main() -> None:
     config = ApiConfig.from_env()
     _configure_logging(config)
-    uvicorn.run(create_app(config), host=config.host, port=config.port, log_level="info")
+    uvicorn.run(create_app(config), host=config.host, port=config.port, log_level=config.log_level.lower())
 
 
 if __name__ == "__main__":

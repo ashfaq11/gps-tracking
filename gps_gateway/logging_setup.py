@@ -50,9 +50,13 @@ def configure_logging(config: Config) -> None:
     heartbeats would drown the console -- except when there is no log
     directory, when it falls back to the console so it is still visible.
     """
-    logging.basicConfig(level=logging.INFO, format=FORMAT)
+    logging.basicConfig(level=config.log_level, format=FORMAT)
+    # basicConfig leaves an already-configured root alone, level included.
+    logging.getLogger().setLevel(config.log_level)
     messages = logging.getLogger(MESSAGE_LOGGER)
     messages.disabled = not config.message_log
+    # Asked for explicitly, so written whatever the general level is.
+    messages.setLevel(logging.INFO if config.message_log else logging.NOTSET)
     if not config.log_dir:
         return
 
