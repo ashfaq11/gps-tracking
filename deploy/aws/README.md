@@ -112,6 +112,23 @@ From then on every push to `main` runs the test suite, then SSHes in and runs
 use **Actions → Deploy → Run workflow**. Until the secrets exist, the deploy
 job skips with a notice rather than failing.
 
+## Nightly maintenance: backups and data retention
+
+Every deploy installs a cron job (`ensure-maintenance.sh`) that runs
+[`maintenance.sh`](maintenance.sh) at 03:00 IST. It dumps the database to
+`/var/backups/gps-tracking` (7 days kept; optional S3 copy), then deletes
+positions older than 180 days, keeping each vehicle's last position. Tune it
+in `/etc/gps-tracking-maintenance.env`; see the script's header. Output goes
+to `/var/log/gps-maintenance.log`.
+
+Restore a backup:
+
+```bash
+sudo -u postgres pg_restore -d trackit --clean --if-exists /var/backups/gps-tracking/trackit-YYYY-MM-DD.dump
+```
+
+Cost notes and the one-time console checklist: [COSTS.md](COSTS.md).
+
 ## Day to day
 
 ```bash

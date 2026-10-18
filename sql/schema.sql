@@ -1175,3 +1175,69 @@ BEGIN
     END LOOP;
 END
 $grant_shop$;
+
+
+-- ---------------------------------------------------------------------------
+-- Data retention.
+--
+-- device_locations is by far the biggest table: a tracker reporting every
+-- 10-30 s adds roughly 1-2 MB a day, forever. Nothing in the product reads
+-- further back than 90 days (the history picker's limit; reports go to 30),
+-- so rows older than the retention period are only disk -- and an EBS
+-- volume that keeps growing, plus slower backups.
+--
+-- purge_old_locations() deletes positions (and ignition changes) older than
+-- keep_days, one batch at a time so it never holds a long lock or bloats a
+-- single transaction; call it until it returns 0 (deploy/aws/maintenance.sh
+-- does, nightly). Each device's newest row always survives, so a vehicle
+-- that has been silent for a year still shows where it was last seen.
+-- Refuses anything under 90 days, the furthest back the app lets anyone look.
+-- ---------------------------------------------------------------------------
+
+-- BRIN: a few kilobytes for any table size, and exactly right for a column
+-- that only ever grows with insertion order. Lets the purge find old rows
+-- without scanning the whole table.
+CREATE INDEX IF NOT EXISTS device_locations_received_brin
+    ON device_locations USING brin (received_at);
+
+CREATE OR REPLACE FUNCTION purge_old_locations(keep_days INT, batch_size INT DEFAULT 50000)
+RETURNS BIGINT AS $$
+DECLARE
+    cutoff  TIMESTAMPTZ;
+    removed BIGINT;
+    logs    BIGINT;
+BEGIN
+    IF keep_days IS NULL OR keep_days < 90 THEN
+        RAISE EXCEPTION 'keep_days must be at least 90 (got %)', keep_days;
+    END IF;
+    cutoff := now() - make_interval(days => keep_days);
+
+    WITH doomed AS (
+        SELECT d.id FROM device_locations d
+        WHERE d.received_at < cutoff
+          AND EXISTS (
+              SELECT 1 FROM device_locations n
+              WHERE n.device_id = d.device_id AND n.received_at > d.received_at
+          )
+        LIMIT batch_size
+    ), gone AS (
+        DELETE FROM device_locations WHERE id IN (SELECT id FROM doomed) RETURNING 1
+    )
+    SELECT count(*) INTO removed FROM gone;
+
+    WITH doomed AS (
+        SELECT g.id FROM device_ignition_log g
+        WHERE g.at < cutoff
+          AND EXISTS (
+              SELECT 1 FROM device_ignition_log n
+              WHERE n.device_id = g.device_id AND n.at > g.at
+          )
+        LIMIT batch_size
+    ), gone AS (
+        DELETE FROM device_ignition_log WHERE id IN (SELECT id FROM doomed) RETURNING 1
+    )
+    SELECT count(*) INTO logs FROM gone;
+
+    RETURN removed + logs;
+END;
+$$ LANGUAGE plpgsql;

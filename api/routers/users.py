@@ -8,7 +8,7 @@ user.
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Security, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 from ..config import ApiConfig
@@ -30,6 +30,7 @@ from ..schemas import (
     UserOut,
     UserUpdate,
 )
+from ..throttle import LoginThrottle, client_address
 from ..users_repository import AuthenticatedUser, UserRepository
 
 router = APIRouter(tags=["accounts"])
@@ -46,10 +47,14 @@ _BAD_CREDENTIALS = HTTPException(
     response_model=LoginResponse,
     summary="Sign in and get a session token",
     response_description="A bearer token, when it expires, and the account it belongs to.",
-    responses={401: {"description": "Wrong credentials, or the account is deactivated."}},
+    responses={
+        401: {"description": "Wrong credentials, or the account is deactivated."},
+        429: {"description": "Too many failed attempts; retry after `Retry-After` seconds."},
+    },
 )
 async def login(
     payload: LoginRequest,
+    request: Request,
     users: UserRepository = Depends(get_users),
     config: ApiConfig = Depends(get_config),
 ) -> LoginResponse:
@@ -61,12 +66,26 @@ async def login(
     A deactivated account fails here with the same message as a wrong
     password. Saying "this account is deactivated" would confirm to an
     outsider that the username exists.
+
+    Repeated failures are throttled (see `api/throttle.py`): 429 with a
+    `Retry-After` header until the window slides on.
     """
+    throttle: LoginThrottle = request.app.state.login_throttle
+    address = client_address(request)
+    wait = throttle.retry_after(payload.username, address)
+    if wait:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed sign-in attempts. Try again in a few minutes.",
+            headers={"Retry-After": str(wait)},
+        )
     started = await users.start_session(
         payload.username, payload.password, timedelta(hours=config.session_ttl_hours)
     )
     if started is None:
+        throttle.failed(payload.username, address)
         raise _BAD_CREDENTIALS
+    throttle.succeeded(payload.username, address)
     token, expires_at, user = started
     return LoginResponse(token=token, expires_at=expires_at, user=user)
 
