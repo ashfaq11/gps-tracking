@@ -39,6 +39,9 @@ jobs:
             # gps-api reads (never printed); a no-op once they exist.
             ./deploy/aws/ensure-vapid.sh
 
+            # Nightly backup + retention purge (cron); a no-op once installed.
+            ./deploy/aws/ensure-maintenance.sh
+
             sudo systemctl restart gps-api
             if echo "$CHANGED" | grep -qE '^(gps_gateway/|requirements)'; then sudo systemctl restart gps-gateway; fi
 

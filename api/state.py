@@ -40,6 +40,7 @@ from .repository import (
     LocationRepository,
     PostgresLocationRepository,
 )
+from .throttle import LoginThrottle
 from .users_repository import (
     InMemoryUserRepository,
     PostgresUserRepository,
@@ -218,3 +219,4 @@ def init_state(app: FastAPI) -> None:
     # whether lifespan ever runs. Sockets register with it directly; only
     # *delivering* a fix to them needs the LISTEN task started in lifespan.
     app.state.live_connections = ConnectionManager()
+    app.state.login_throttle = LoginThrottle()

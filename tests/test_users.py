@@ -331,3 +331,51 @@ class TestSelfService(AccountTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLoginThrottle(AccountTestCase):
+    async def test_repeated_failures_are_throttled_with_retry_after(self):
+        for _ in range(10):
+            self.assertEqual((await self.login(password="wrong")).status_code, 401)
+        blocked = await self.login(password="wrong")
+        self.assertEqual(blocked.status_code, 429)
+        self.assertGreater(int(blocked.headers["retry-after"]), 0)
+        # Even the right password waits: the window has to slide first.
+        self.assertEqual((await self.login()).status_code, 429)
+
+    async def test_a_success_resets_the_count_for_that_source(self):
+        for _ in range(9):
+            await self.login(password="wrong")
+        self.assertEqual((await self.login()).status_code, 200)
+        for _ in range(9):
+            self.assertEqual((await self.login(password="wrong")).status_code, 401)
+
+    async def test_another_account_is_not_affected(self):
+        for _ in range(11):
+            await self.login(password="wrong")
+        self.assertEqual((await self.login(username="nobody", password="x")).status_code, 401)
+
+
+class TestThrottleWindow(unittest.TestCase):
+    def test_the_window_slides(self):
+        from api.throttle import LoginThrottle
+
+        now = [0.0]
+        throttle = LoginThrottle(per_source=2, per_username=5, window_seconds=60, clock=lambda: now[0])
+        throttle.failed("Bob", "1.1.1.1")
+        throttle.failed("bob", "1.1.1.1")
+        self.assertEqual(throttle.retry_after("bob", "1.1.1.1"), 61)
+        self.assertEqual(throttle.retry_after("bob", "2.2.2.2"), 0)
+        now[0] = 61
+        self.assertEqual(throttle.retry_after("bob", "1.1.1.1"), 0)
+
+
+class TestCompression(AccountTestCase):
+    async def test_large_responses_are_gzipped_for_clients_that_accept_it(self):
+        response = await self.client.get("/openapi.json", headers={"Accept-Encoding": "gzip"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("content-encoding"), "gzip")
+
+    async def test_clients_that_do_not_ask_get_plain_json(self):
+        response = await self.client.get("/openapi.json")
+        self.assertIsNone(response.headers.get("content-encoding"))

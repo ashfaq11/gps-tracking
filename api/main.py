@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from .config import ApiConfig
 from .errors import register_error_handlers
@@ -209,6 +210,11 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     # logs the whole request including CORS handling.
     app.add_middleware(RequestLoggingMiddleware, slow_request_ms=config.slow_request_ms)
     register_error_handlers(app)
+
+    # Lists of fixes are large, repetitive JSON: gzip shrinks them several
+    # times over, which is both faster on a phone and less AWS data-transfer
+    # out (the biggest metered cost after the instance itself).
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     if config.cors_origins:
         app.add_middleware(

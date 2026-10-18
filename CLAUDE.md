@@ -215,6 +215,15 @@ run it by hand after pulling a schema change:
 docker exec -i postgres-local psql -U postgres -d trackit -v ON_ERROR_STOP=1 < sql/schema.sql
 ```
 
+**Retention and backups run nightly on the server, not in either process.**
+`purge_old_locations(keep_days)` (`sql/schema.sql`) deletes positions and
+ignition changes older than the retention period (default 180 days, never
+under 90 -- the history picker's reach), in batches, always keeping each
+device's newest row so `list_devices` still knows it. `deploy/aws/maintenance.sh`
+(cron, installed on every deploy by `ensure-maintenance.sh`) takes a `pg_dump`
+first, then purges. Anything that starts reading further back than 90 days
+must raise that floor first.
+
 **Test harness has no third-party dependencies.** `tests/asgi_client.py` is a
 hand-rolled ASGI client (not `httpx`/`TestClient`) that drives the lifespan
 protocol itself — get/post/patch helpers, `raise_server_exceptions=False`
