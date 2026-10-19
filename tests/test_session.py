@@ -10,6 +10,7 @@ from gps_gateway.protocol import (
     PROTO_LOCATION,
     PROTO_LOCATION_ACC,
     PROTO_LOGIN,
+    PROTO_TIME_REQUEST,
     build_frame,
 )
 from gps_gateway.protocol.framing import FrameDecoder
@@ -100,6 +101,26 @@ class TestDeviceSession(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(acks), 1)
         self.assertEqual(acks[0].protocol, PROTO_LOGIN)
         self.assertEqual(acks[0].serial, 0x0042)
+
+    async def test_a_time_request_is_answered_with_the_utc_time(self):
+        from datetime import datetime, timezone
+
+        await self.feed(build_frame(PROTO_LOGIN, serial=1, content=IMEI_BYTES))
+        before = datetime.now(timezone.utc).replace(microsecond=0)
+        await self.feed(build_frame(PROTO_TIME_REQUEST, serial=0x0A0B))
+        after = datetime.now(timezone.utc)
+        reply = acks_in(self.writer)[-1]
+        self.assertEqual(reply.protocol, PROTO_TIME_REQUEST)
+        self.assertEqual(reply.serial, 0x0A0B)
+        self.assertTrue(reply.crc_ok)
+        y, mo, d, h, mi, sec = reply.content
+        sent = datetime(2000 + y, mo, d, h, mi, sec, tzinfo=timezone.utc)
+        self.assertTrue(before <= sent <= after, f"{before} <= {sent} <= {after}")
+
+    async def test_a_time_request_before_login_is_answered_too(self):
+        await self.feed(build_frame(PROTO_TIME_REQUEST, serial=7))
+        replies = acks_in(self.writer)
+        self.assertEqual([(r.protocol, r.serial) for r in replies], [(PROTO_TIME_REQUEST, 7)])
 
     async def test_every_ack_carries_a_valid_crc(self):
         await self.feed(build_frame(PROTO_LOGIN, serial=1, content=IMEI_BYTES))
