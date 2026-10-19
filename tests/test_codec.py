@@ -351,3 +351,16 @@ class TestZeroSatellites(unittest.TestCase):
         event = decode_location(SAMPLE_LOCATION, "dev")
         self.assertEqual(event.satellites, 9)
         self.assertTrue(event.gps_fixed)
+
+
+class TestTimeResponse(unittest.TestCase):
+    def test_carries_the_utc_date_and_time_as_six_bytes(self):
+        from gps_gateway.protocol import PROTO_TIME_REQUEST, build_time_response
+        from gps_gateway.protocol.framing import FrameDecoder
+
+        frame = build_time_response(0x0102, datetime(2026, 10, 19, 4, 5, 6, tzinfo=timezone.utc))
+        (decoded,) = FrameDecoder().feed(frame)
+        self.assertEqual(decoded.protocol, PROTO_TIME_REQUEST)
+        self.assertEqual(decoded.serial, 0x0102)
+        self.assertTrue(decoded.crc_ok)
+        self.assertEqual(decoded.content, bytes([26, 10, 19, 4, 5, 6]))

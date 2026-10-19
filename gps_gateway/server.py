@@ -26,8 +26,10 @@ from .protocol import (
     PROTO_LOCATION,
     PROTO_LOCATION_ACC,
     PROTO_LOGIN,
+    PROTO_TIME_REQUEST,
     build_ack,
     build_command,
+    build_time_response,
     decode_command_reply,
     decode_heartbeat,
     decode_lbs,
@@ -151,6 +153,7 @@ class DeviceSession(Deliverable):
         """
         self.writer = writer
         acks: list[Frame] = []
+        time_replies: list[Frame] = []
         publishes = []
         logged_in = False
         peer_text = _peer_text(writer.get_extra_info("peername"))
@@ -218,6 +221,12 @@ class DeviceSession(Deliverable):
                     publishes.append(self._publish_status(status))
                 acks.append(frame)
 
+            elif frame.protocol == PROTO_TIME_REQUEST:
+                # Answered even before login: a tracker can ask the time first
+                # thing, and a wrong clock stamps every fix it sends.
+                log.debug("Time request from %s", self.device_id or peer_text)
+                time_replies.append(frame)
+
             elif frame.protocol in (PROTO_COMMAND_REPLY, PROTO_COMMAND_REPLY_NEW):
                 if self.device_id:
                     publishes.append(self._command_replied(frame))
@@ -227,9 +236,13 @@ class DeviceSession(Deliverable):
 
         if publishes:
             await asyncio.gather(*publishes)
-        if acks:
+        if acks or time_replies:
             for frame in acks:
                 writer.write(build_ack(frame.protocol, frame.serial))
+            for frame in time_replies:
+                reply = build_time_response(frame.serial)
+                writer.write(reply)
+                log_event("OUT", self.device_id or peer_text, "TIME", reply[4:10].hex(" "))
             await writer.drain()
         if logged_in:
             # Anything queued while this tracker was offline.

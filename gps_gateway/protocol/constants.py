@@ -29,6 +29,11 @@ PROTO_LOCATION_ACC = 0x22
 PROTO_HEARTBEAT = 0x13
 PROTO_ALARM = 0x16
 PROTO_LBS = 0x18
+# Device -> server, empty: "what time is it?" -- sent at boot and while the
+# tracker has no GPS time. The server answers with the same protocol number
+# and the UTC date and time (YY MM DD hh mm ss); without that answer the
+# tracker keeps a wrong clock and stamps its fixes with it.
+PROTO_TIME_REQUEST = 0x8A
 # Server -> device: a text command (e.g. "RELAY,1#") over the open connection,
 # the same text the tracker would accept by SMS.
 PROTO_COMMAND = 0x80

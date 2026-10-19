@@ -11,6 +11,7 @@ from .constants import (
     PROTO_COMMAND_REPLY_NEW,
     PROTO_LOCATION,
     PROTO_LOCATION_ACC,
+    PROTO_TIME_REQUEST,
     START_SHORT,
     STOP_BITS,
 )
@@ -249,6 +250,17 @@ def build_ack(protocol_number: int, serial: int, content: bytes = b"") -> bytes:
     and the CRC is checked by real Concox hardware.
     """
     return build_frame(protocol_number, serial, content)
+
+
+def build_time_response(serial: int, now: datetime | None = None) -> bytes:
+    """
+    The answer to a tracker's time request (0x8A): the current UTC date and
+    time as six bytes -- year since 2000, month, day, hour, minute, second --
+    echoing the request's serial like any ACK.
+    """
+    t = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    content = bytes([t.year - 2000, t.month, t.day, t.hour, t.minute, t.second])
+    return build_frame(PROTO_TIME_REQUEST, serial, content)
 
 
 # Language field closing a command: 0x0002 asks for English replies.
