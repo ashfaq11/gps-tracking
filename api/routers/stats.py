@@ -142,9 +142,11 @@ async def driving_report(
     until: datetime | None = Query(default=None, description="Window end. Defaults to now."),
     speed_limit_kmh: int = Query(
         default=DEFAULT_SPEED_LIMIT_KMH,
-        ge=20,
-        le=160,
-        description="Driving faster than this counts as overspeed.",
+        # Down to walking pace so an admin can test the report without a
+        # highway; up to the plausible-speed cap.
+        ge=5,
+        le=200,
+        description="Driving faster than this counts as overspeed (5-200 km/h).",
     ),
     user: AuthenticatedUser = Depends(current_user),
     repo: LocationRepository = Depends(get_repository),
