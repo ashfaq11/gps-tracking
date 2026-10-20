@@ -232,6 +232,14 @@ class TestDrivingEndpoint(unittest.IsolatedAsyncioTestCase):
     async def test_needs_a_sign_in(self):
         self.assertEqual((await self.client.get(f"{BASE}/stats/driving")).status_code, 401)
 
+    async def test_accepts_a_low_test_limit_and_refuses_out_of_range(self):
+        ok = await self.client.get(f"{BASE}/stats/driving?speed_limit_kmh=5", headers=self.admin)
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok.json()["speed_limit_kmh"], 5)
+        for bad in (4, 201):
+            response = await self.client.get(f"{BASE}/stats/driving?speed_limit_kmh={bad}", headers=self.admin)
+            self.assertEqual(response.status_code, 422)
+
     async def test_refuses_a_window_longer_than_eight_days(self):
         now = datetime.now(timezone.utc)
         window = urlencode(
