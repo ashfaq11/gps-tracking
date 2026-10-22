@@ -306,6 +306,7 @@ CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx ON push_subscriptions (us
 CREATE OR REPLACE FUNCTION notify_vehicle_motion() RETURNS trigger AS $$
 DECLARE
     previous_speed INT;
+    previous_at    TIMESTAMPTZ;
     was_moving     BOOLEAN;
     is_moving      BOOLEAN;
     last_moving_at TIMESTAMPTZ;
@@ -318,7 +319,7 @@ BEGIN
     -- `received_at <=` is implied by the row comparison, but spelled out so
     -- the (device_id, received_at) index can seek to it rather than scan
     -- past newer rows -- this runs once for every fix stored.
-    SELECT speed_kmh INTO previous_speed
+    SELECT speed_kmh, received_at INTO previous_speed, previous_at
     FROM device_locations
     WHERE device_id = NEW.device_id
       AND received_at <= NEW.received_at
@@ -334,33 +335,40 @@ BEGIN
     was_moving := previous_speed > 0;
     is_moving  := COALESCE(NEW.speed_kmh, 0) > 0;
 
-    IF was_moving = is_moving THEN
+    -- Moving now: news only when it was stopped before.
+    IF is_moving AND was_moving THEN
         RETURN NEW;
     END IF;
 
-    -- A "started moving" alert is only useful for a real halt -- a stop at
-    -- a traffic light and an actual rest break both read as "stopped" the
-    -- instant they happen, and only the gap before it moves again tells
-    -- them apart. Require the vehicle to have been stopped at least ten
-    -- minutes before alerting that it moved again; "stopped" itself still
-    -- fires immediately, since there is nothing to wait for at that end.
-    IF is_moving THEN
-        SELECT received_at INTO last_moving_at
-        FROM device_locations
-        WHERE device_id = NEW.device_id
-          AND received_at <= NEW.received_at
-          AND (received_at, id) < (NEW.received_at, NEW.id)
-          AND speed_kmh > 0
-        ORDER BY received_at DESC, id DESC
-        LIMIT 1;
+    -- When it last moved, before this fix (NULL: never, since first seen).
+    SELECT received_at INTO last_moving_at
+    FROM device_locations
+    WHERE device_id = NEW.device_id
+      AND received_at <= NEW.received_at
+      AND (received_at, id) < (NEW.received_at, NEW.id)
+      AND speed_kmh > 0
+    ORDER BY received_at DESC, id DESC
+    LIMIT 1;
 
-        -- last_moving_at NULL means no prior moving fix at all -- it has
-        -- been stopped since it was first seen, which certainly clears ten
-        -- minutes, so only the non-null case can fall short of it.
-        -- (INTERVAL has no representation for "infinity" on this Postgres
-        -- version, so this skips the subtraction entirely rather than
-        -- computing against it.)
+    IF is_moving THEN
+        -- A "started moving" alert is only useful for a real halt: require
+        -- the vehicle to have been stopped at least ten minutes. NULL means
+        -- stopped since first seen, which certainly clears it. (INTERVAL has
+        -- no "infinity" on this Postgres version, so the subtraction is
+        -- skipped rather than computed against it.)
         IF last_moving_at IS NOT NULL AND NEW.received_at - last_moving_at < INTERVAL '10 minutes' THEN
+            RETURN NEW;
+        END IF;
+    ELSE
+        -- "Stopped" waits until it has stood still for three minutes -- a
+        -- traffic light or a jam reads 0 km/h too, and is not a stop. It
+        -- fires on the first fix past that mark, once: a later stopped fix
+        -- finds the previous one already past it. A tracker that goes quiet
+        -- before the mark is never announced stopped (its ignition-off
+        -- alert still is).
+        IF last_moving_at IS NULL
+           OR NEW.received_at - last_moving_at < INTERVAL '3 minutes'
+           OR previous_at - last_moving_at >= INTERVAL '3 minutes' THEN
             RETURN NEW;
         END IF;
     END IF;
