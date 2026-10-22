@@ -3,9 +3,11 @@
 import os
 from dataclasses import dataclass, field
 
+from weekly_logs import DEFAULT_RETENTION_WEEKS, retention_weeks
 
-# Log files are never kept longer than this, whatever the environment says.
-MAX_LOG_RETENTION_DAYS = 30
+# Outside the project directory: on the server, next to the checkout
+# (~/gps_gateway/logs beside ~/gps_gateway/gps-tracking).
+DEFAULT_LOG_DIR = os.path.expanduser("~/gps_gateway/logs")
 
 
 def _log_level(value: str | None, default: str) -> str:
@@ -43,10 +45,8 @@ class ApiConfig:
     vapid_subject: str = "mailto:admin@example.com"
     # Requests at or above this are logged as warnings.
     slow_request_ms: float = 1000.0
-    # Connection pool sizing. Serverless platforms run many short-lived
-    # instances, each with its own pool, so a generous pool per instance
-    # exhausts the database's connection limit. On Vercel use 0/1 against a
-    # transaction-mode pooler.
+    # Connection pool sizing, per API process. Against a transaction-mode
+    # pooler, keep it small (and the statement cache off, below).
     pg_pool_min: int = 1
     pg_pool_max: int = 10
     # asyncpg caches prepared statements, which a transaction-mode pooler
@@ -55,13 +55,15 @@ class ApiConfig:
     # when connecting through one.
     pg_statement_cache_size: int = 100
     cors_origins: list[str] = field(default_factory=list)
-    # `python -m api` also logs to <log_dir>/api.log, rotated at midnight and
-    # deleted once older than log_retention_days (at most 30). Empty
-    # disables the file (console only).
-    log_dir: str = "logs"
-    log_retention_days: int = 30
-    # Only errors by default, so the console and api.log hold what needs
-    # looking at; API_LOG_LEVEL=INFO brings back the per-request lines.
+    # `python -m api` also writes warnings and errors to the week's file in
+    # log_dir -- <Monday>_<Sunday>.log, shared with the gateway, the last
+    # log_retention_weeks kept (weekly_logs.py). Empty disables the file
+    # (console only).
+    log_dir: str = DEFAULT_LOG_DIR
+    log_retention_weeks: int = DEFAULT_RETENTION_WEEKS
+    # Only errors by default; warnings too at WARNING, and the per-request
+    # lines on the console at INFO. <log_dir>/log-level, set through
+    # PUT /logs/level, overrides this without a restart.
     log_level: str = "ERROR"
 
     @classmethod
@@ -84,10 +86,7 @@ class ApiConfig:
             slow_request_ms=float(env.get("API_SLOW_REQUEST_MS", cls.slow_request_ms)),
             log_dir=env.get("API_LOG_DIR", cls.log_dir),
             log_level=_log_level(env.get("API_LOG_LEVEL"), cls.log_level),
-            log_retention_days=min(
-                MAX_LOG_RETENTION_DAYS,
-                max(1, int(env.get("API_LOG_RETENTION_DAYS", cls.log_retention_days))),
-            ),
+            log_retention_weeks=retention_weeks(env.get("API_LOG_RETENTION_WEEKS")),
             pg_pool_min=int(env.get("PG_POOL_MIN", cls.pg_pool_min)),
             pg_pool_max=int(env.get("PG_POOL_MAX", cls.pg_pool_max)),
             pg_statement_cache_size=int(

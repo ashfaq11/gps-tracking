@@ -1,9 +1,10 @@
-# Image for the TCP ingestion gateway (Fly.io).
-# The REST API deploys separately to Vercel and does not use this file.
+# Image for the TCP ingestion gateway (deploy/aws, beside the API's image,
+# Dockerfile.api).
 FROM python:3.13-slim
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    GATEWAY_LOG_DIR=/var/log/gps-tracking
 
 WORKDIR /app
 
@@ -11,12 +12,13 @@ WORKDIR /app
 COPY requirements-gateway.txt .
 RUN pip install --no-cache-dir -r requirements-gateway.txt
 
+COPY weekly_logs.py ./
 COPY gps_gateway/ ./gps_gateway/
 COPY sql/ ./sql/
 
 # Run as a non-root user: this process is exposed directly to the internet.
 RUN useradd --create-home --uid 10001 gateway \
-    && mkdir -p /app/logs && chown gateway /app/logs
+    && mkdir -p /var/log/gps-tracking && chown gateway /var/log/gps-tracking
 USER gateway
 
 EXPOSE 5023

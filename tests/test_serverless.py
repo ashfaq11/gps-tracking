@@ -1,9 +1,8 @@
 """
 The API must work on hosts that never run ASGI lifespan events.
 
-Vercel's Python runtime is the case that matters here: if the repository were
-only built in `lifespan`, every request would answer 503 in production while
-passing locally under uvicorn.
+If the repository were only built in `lifespan`, every request on such a
+host would answer 503 while passing locally under uvicorn.
 """
 
 import unittest
@@ -28,7 +27,7 @@ FIX = {"device_id": "dev1", "latitude": 12.97, "longitude": 77.59}
 class TestWithoutLifespan(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         # Deliberately NOT entering the client context, so no startup event
-        # ever fires -- exactly how the app is invoked on Vercel.
+        # ever fires -- as on a host that skips lifespan.
         self.client = AsgiClient(
             create_app(
                 ApiConfig(

@@ -5,11 +5,13 @@ import os
 import struct
 import tempfile
 import unittest
+from datetime import datetime
 
-from gps_gateway.config import MAX_LOG_RETENTION_DAYS, Config
-from gps_gateway.logging_setup import MESSAGE_LOG_FILE_NAME, MESSAGE_LOGGER, configure_logging
+from gps_gateway.config import Config
+from gps_gateway.logging_setup import MESSAGE_LOGGER, configure_logging
 from gps_gateway.message_log import describe, log_event, log_inbound
 from gps_gateway.protocol.framing import Frame
+from weekly_logs import IST, week_file, week_start
 
 
 def frame(protocol: int, content: bytes, serial: int = 7, crc_ok: bool = True) -> Frame:
@@ -99,13 +101,10 @@ class TestLogLines(unittest.TestCase):
 
 
 class TestConfig(unittest.TestCase):
-    def test_retention_defaults_to_and_never_exceeds_30_days(self):
-        self.assertEqual(Config.from_env({}).log_retention_days, 30)
-        self.assertEqual(
-            Config.from_env({"GATEWAY_LOG_RETENTION_DAYS": "365"}).log_retention_days,
-            MAX_LOG_RETENTION_DAYS,
-        )
-        self.assertEqual(Config.from_env({"GATEWAY_LOG_RETENTION_DAYS": "7"}).log_retention_days, 7)
+    def test_retention_defaults_to_4_weeks_and_never_exceeds_12(self):
+        self.assertEqual(Config.from_env({}).log_retention_weeks, 4)
+        self.assertEqual(Config.from_env({"GATEWAY_LOG_RETENTION_WEEKS": "52"}).log_retention_weeks, 12)
+        self.assertEqual(Config.from_env({"GATEWAY_LOG_RETENTION_WEEKS": "2"}).log_retention_weeks, 2)
 
     def test_message_log_is_off_unless_switched_on(self):
         self.assertFalse(Config.from_env({}).message_log)
@@ -132,20 +131,16 @@ class TestFiles(unittest.TestCase):
         self.messages.disabled = False
         self.messages.setLevel(logging.NOTSET)
 
-    def test_packets_go_to_their_own_file_with_an_ist_timestamp(self):
+    def test_packets_go_to_their_own_week_file_with_an_ist_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:
-            configure_logging(Config(log_dir=tmp, log_retention_days=30, message_log=True))
+            configure_logging(Config(log_dir=tmp, log_retention_weeks=4, message_log=True))
             log_event("OUT", "868720065896205", "LOGIN OK", "accepted")
-            for handler in self.messages.handlers:
-                handler.flush()
-            with open(os.path.join(tmp, MESSAGE_LOG_FILE_NAME), encoding="utf-8") as f:
+            week = week_start(datetime.now(IST))
+            with open(os.path.join(tmp, week_file(week, "packets")), encoding="utf-8") as f:
                 line = f.read().strip()
             self.assertRegex(line, r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d IST OUT  868720065896205")
-            self.assertTrue(os.path.exists(os.path.join(tmp, "gateway.log")))
-            rotating = [
-                h for h in self.messages.handlers if getattr(h, "baseFilename", "").startswith(tmp)
-            ]
-            self.assertEqual(rotating[0].backupCount, 30)
+            # Not in the warnings-and-errors file.
+            self.assertFalse(os.path.exists(os.path.join(tmp, week_file(week))))
 
 
 if __name__ == "__main__":

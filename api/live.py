@@ -8,11 +8,9 @@ this API's ingest endpoint and the TCP gateway -- and fires `pg_notify`; a
 listener here (via pglisten.listen_forever) turns that into a message on
 every WebSocket connection whose account can see the device.
 
-Also serverless-incompatible for the same reason as push: the listener needs
-a process that keeps running, which Vercel does not provide. A WebSocket
-route itself is not servable there either -- Vercel's Python runtime speaks
-plain request/response -- so live location, like push delivery, needs a host
-that runs ASGI lifespan (see api/push.py's module docstring).
+Like push delivery, the listener needs a process that keeps running and
+runs ASGI lifespan (see api/push.py's module docstring) -- `python -m api`,
+as deploy/aws runs it.
 """
 
 import asyncio

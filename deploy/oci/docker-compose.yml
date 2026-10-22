@@ -2,8 +2,7 @@
 #
 #   sudo docker compose --env-file /etc/gps-gateway.env up -d
 #
-# The API is not here -- it deploys to Vercel. This box exists to hold TCP
-# sockets open, which serverless cannot do.
+# The gateway alone; deploy/aws runs the API and the gateway together.
 
 services:
   gateway:

@@ -259,10 +259,9 @@ push exists. `run_motion_listener` (`api/push.py`) holds one dedicated
 scoped the same way every other device-facing endpoint is: only to
 subscriptions belonging to an account that can see that device.
 
-The listener starts from `lifespan`, so **it does not run on Vercel** —
-serverless skips lifespan and is short-lived. Subscribing and unsubscribing
-still work anywhere; only delivery needs a long-running host such as the OCI
-VM this project already runs the gateway on.
+The listener starts from `lifespan`, so it needs a long-running process --
+`python -m api`, as the AWS deployment runs it. Subscribing and unsubscribing
+are ordinary requests and work anywhere.
 
 ## Logging
 
@@ -296,35 +295,51 @@ since `api.access` supersedes it.
 
 ### Log files
 
-Both processes write log files under `logs/` (relative to the working
-directory; override with `GATEWAY_LOG_DIR` / `API_LOG_DIR`, empty for console
-only). Timestamps in the files are IST.
+Both processes write their **warnings and errors** to one shared file per
+week, in a folder **outside the project directory**: by default
+`~/gps_gateway/logs` (on the server that is next to the checkout,
+`~/gps_gateway/gps-tracking`; override with `API_LOG_DIR` /
+`GATEWAY_LOG_DIR`, empty for console only).
 
-Both log **errors only** by default, so the console and the files hold just
-what needs looking at. Set `API_LOG_LEVEL` / `GATEWAY_LOG_LEVEL` to `INFO`
-(or `WARNING`, `DEBUG`) to see requests, connects and logins again while
-investigating something.
+```
+~/gps_gateway/logs/
+  19102026_25102026.log     Monday 19 Oct 2026 to Sunday 25 Oct (ddmmyyyy), IST
+  26102026_01112026.log
+  log-level                 the level set through the API (below)
+```
 
-| File | Written by | What |
-|---|---|---|
-| `gateway-messages.log` | gateway | every packet a tracker sends, one human-readable line each (login, location with a map link, heartbeat with ignition/battery/GSM, alarm, cell-only position, command reply, unknown packets as hex), plus commands sent and refused logins |
-| `gateway.log` | gateway | everything else the gateway logs |
-| `api.log` | `python -m api` | the API's log, each line tagged with its request id |
+Each line says which process and logger wrote it, the API's with its request
+id. The last `API_LOG_RETENTION_WEEKS` / `GATEWAY_LOG_RETENTION_WEEKS` weeks
+are kept (default 4, at most 12); older files are deleted when a process
+starts or a new week begins, so no cron job or logrotate is needed. If the
+folder cannot be written, the process logs a warning and carries on with
+console output only.
+
+**The level is ERROR**: only errors reach the file. Change it whenever you
+like, no restart needed -- `PUT /api/v1/logs/level {"level": "WARNING"}`
+(admin) adds warnings, and `ERROR` goes back. The API applies it at once,
+the gateway within 30 s, and it is kept in `log-level` across restarts. Until
+it is set, `API_LOG_LEVEL` / `GATEWAY_LOG_LEVEL` (default `ERROR`) decide.
+INFO/DEBUG only add console output; the files never hold more than warnings.
+
+Reading them over HTTP (admin only):
+
+| Endpoint | What |
+|---|---|
+| `GET /api/v1/logs` | the week files, newest first, with sizes |
+| `GET /api/v1/logs/{name}?tail=1000&level=ERROR` | one file as text: the newest `tail` lines, optionally only `ERROR` or `WARNING` records (with their tracebacks) |
+| `GET /api/v1/logs/level` / `PUT /api/v1/logs/level` | the level now / change it |
+
+The gateway's per-packet log is separate and off by default:
+`GATEWAY_MESSAGE_LOG=on` writes every packet a tracker sends, one readable
+line each, to the week's `19102026_25102026.packets.log`
+(`GATEWAY_MESSAGE_LOG_RAW=1` adds each packet's raw hex, for checking a new
+tracker model byte by byte):
 
 ```
 2026-09-30 11:25:32 IST IN   868720065896205  LOCATION   #0042  fixed 2026-09-30 11:25:30 IST · 12.971234, 77.594321 · 44 km/h · heading 267° W · 9 satellites · GPS lock · cell 404/45/1234/56789 · map https://maps.google.com/?q=12.971234,77.594321
 2026-09-30 11:26:02 IST IN   868720065896205  HEARTBEAT  #0043  ignition ON · GPS tracking on · charging · battery medium (4/6) · GSM good (3/4)
-2026-09-30 11:27:10 IST OUT  868720065896205  COMMAND           'TIMER,10,3600#' (command 17)
 ```
-
-Each file rolls over at midnight to `<name>.YYYY-MM-DD`, and rotated files
-older than `GATEWAY_LOG_RETENTION_DAYS` / `API_LOG_RETENTION_DAYS` (default
-30, and never more than 30) are deleted at each rollover -- no cron job or
-logrotate needed. If a directory cannot be written, the process logs a
-warning and carries on with console output only. The message log is off by
-default (`GATEWAY_MESSAGE_LOG=on` to debug a tracker); `GATEWAY_MESSAGE_LOG_RAW=1`
-adds each packet's raw hex, for checking a new tracker model byte by byte.
-On Vercel the API has no writable log directory and logs to the console.
 
 ## Swagger / OpenAPI
 
@@ -385,20 +400,17 @@ its secrets are set, automatically on every merge to `main` by
 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). Setup, the
 env file, secrets and rollback: [`deploy/aws/README.md`](deploy/aws/README.md).
 
-The Oracle Cloud + Vercel layout below remains a supported alternative.
-
-## Deployment (Oracle Cloud + Vercel + Supabase)
+## Alternative: gateway on Oracle Cloud + Supabase
 
 ```
-GT06 trackers ──TCP:5023──▶ OCI Always Free VM (gps_gateway) ─┐
-                                                              ├─▶ Supabase Postgres
-phone apps ──HTTPS──▶ Vercel (api) ───────────────────────────┘
+GT06 trackers ──TCP:5023──▶ OCI Always Free VM (gps_gateway) ──▶ Supabase Postgres
 ```
 
-The gateway cannot run on Vercel: it needs a raw TCP port and a process that
-holds sockets open for hours, neither of which serverless provides. An OCI
-Always Free VM gives it both, plus a permanent public IPv4 for the tracker's
-SMS command — at no cost, and without expiring when the trial credits do.
+The gateway needs a raw TCP port and a process that holds sockets open for
+hours. An OCI Always Free VM gives it both, plus a permanent public IPv4 for
+the tracker's SMS command — at no cost, and without expiring when the trial
+credits do. The API then runs as on AWS (`Dockerfile.api`), anywhere with a
+long-running process.
 
 Full walkthrough: **[deploy/oci/README.md](deploy/oci/README.md)**.
 
@@ -416,7 +428,7 @@ interchangeable here:
 | Consumer | Port | Why |
 |---|---|---|
 | OCI gateway | **5432** session pooler | one long-lived process; prepared statements work |
-| Vercel API | **6543** transaction pooler | many short-lived instances; needs `PG_STATEMENT_CACHE_SIZE=0` |
+| anything through **6543** | transaction pooler | needs `PG_STATEMENT_CACHE_SIZE=0` |
 
 asyncpg caches prepared statements, which a transaction-mode pooler cannot
 support — a connection goes to a different client between statements. Setting
@@ -448,34 +460,11 @@ Verify without hardware:
 python3 tools/simulate_device.py --host <your-public-ip> --port 5023 --pings 3
 ```
 
-### 3. API on Vercel
-
-```bash
-vercel link
-vercel env add PG_DSN                  # the 6543 transaction pooler string
-vercel env add INGEST_API_KEY          # a real secret, not "dev"
-vercel env add PG_STATEMENT_CACHE_SIZE # 0
-vercel env add PG_POOL_MIN             # 0
-vercel env add PG_POOL_MAX             # 1
-vercel env add API_CORS_ORIGINS        # https://your-dashboard.vercel.app
-vercel deploy --prod
-```
-
-`vercel.json` routes every path to [`vercel_entry.py`](vercel_entry.py), which
-sits at the root on purpose: Vercel turns each file under a top-level `api/`
-directory into its own function, which would publish `config.py` and
-`repository.py` as endpoints.
-
-Pool sizing matters. Each Vercel instance builds its own pool, so `PG_POOL_MAX`
-is multiplied by the number of concurrent instances — `0/1` against the pooler
-is the safe setting.
-
 ### Deployment gotchas already handled
 
-- **Vercel does not reliably run ASGI lifespan.** The database pool is created
-  lazily on first request ([api/state.py](api/state.py)) rather than in a
-  startup hook, which would otherwise leave every request answering 503.
-  Covered by `tests/test_serverless.py`.
+- **A host that skips ASGI lifespan still works.** The database pool is
+  created lazily on first request ([api/state.py](api/state.py)) rather than
+  only in a startup hook. Covered by `tests/test_serverless.py`.
 - **Restarts drop every device socket.** Trackers reconnect on their own, but
   expect a gap in fixes at each gateway deploy.
 - **The gateway trusts the IMEI in the login packet.** On a public IP, anyone
@@ -494,14 +483,14 @@ is the safe setting.
 | `GATEWAY_BATCH_SIZE` | `500` | gateway, max fixes per database write (one `COPY`); `1` turns batching off and ACKs only after each write |
 | `GATEWAY_FLUSH_INTERVAL` | `10` | gateway, seconds a partial batch waits before it is written — devices are ACKed on queueing, so this is also the live-map lag and what a crash can lose |
 | `GATEWAY_QUEUE_MAX` | `10000` | gateway, fixes waiting to be written before sessions stop reading their sockets |
-| `GATEWAY_LOG_DIR` | `logs` | gateway, directory for `gateway.log` and `gateway-messages.log`; set empty to log to the console only |
-| `GATEWAY_LOG_RETENTION_DAYS` | `30` | gateway, days of rotated log files kept (at most 30) |
-| `GATEWAY_LOG_LEVEL` | `ERROR` | gateway, lowest level logged (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `GATEWAY_LOG_DIR` | `~/gps_gateway/logs` | gateway, folder (outside the project) for the weekly log files; empty for console only |
+| `GATEWAY_LOG_RETENTION_WEEKS` | `4` | gateway, weeks of log files kept (at most 12) |
+| `GATEWAY_LOG_LEVEL` | `ERROR` | gateway, lowest level logged until one is set through `PUT /logs/level` |
 | `GATEWAY_MESSAGE_LOG` | `off` | gateway, one readable line per tracker packet in `gateway-messages.log` |
 | `GATEWAY_MESSAGE_LOG_RAW` | `off` | gateway, also append each packet's raw hex |
-| `API_LOG_DIR` | `logs` | api (`python -m api`), directory for `api.log`; empty for console only |
-| `API_LOG_RETENTION_DAYS` | `30` | api, days of rotated log files kept (at most 30) |
-| `API_LOG_LEVEL` | `ERROR` | api, lowest level logged (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `API_LOG_DIR` | `~/gps_gateway/logs` | api (`python -m api`), the same folder: both write one shared file per week; empty for console only |
+| `API_LOG_RETENTION_WEEKS` | `4` | api, weeks of log files kept (at most 12) |
+| `API_LOG_LEVEL` | `ERROR` | api, lowest level logged until one is set through `PUT /logs/level` |
 | `PG_DSN` | `postgresql://user:pass@localhost:5432/gps` | both |
 | `API_HOST` / `API_PORT` | `127.0.0.1` / `55920` | api |
 | `API_BACKEND` | `postgres` | api (`postgres` or `memory`) |
@@ -533,7 +522,7 @@ python -m unittest discover -s tests -t .
 and hemisphere decoding, frame reassembly across TCP boundaries, a full
 device conversation over a real socket, the API's auth (including per-account
 device scoping on `/devices` and `/stats`), validation and paging, request/
-error logging, push subscribe/unsubscribe, and serverless behaviour with no
+error logging, push subscribe/unsubscribe, and startup without ASGI lifespan, with no
 lifespan events. `pywebpush`/`py-vapid` are needed for the push tests to run
 (`pip install -r requirements.txt`); everything else has no third-party test
 dependencies.

@@ -9,12 +9,10 @@ prints a fresh VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY pair for the environment.
 The listener needs a process that keeps running -- it holds one dedicated
 Postgres connection open for `LISTEN` and reacts to notifications as they
 arrive. That works when `python -m api` (or any host that runs ASGI lifespan)
-is the deployment target, but **not on Vercel**: a serverless invocation is
-short-lived and may never see the connection stay open long enough to receive
-anything. Subscribing and unsubscribing still work everywhere, since those are
-ordinary per-request database writes -- only delivery needs a long-running
-process. If the REST API stays on Vercel, this listener can run as its own
-small process instead, the same way the TCP gateway already does.
+is the deployment target, as on deploy/aws -- not on a serverless host,
+whose short-lived invocations never keep the connection open long enough to
+receive anything. Subscribing and unsubscribing work anywhere (ordinary
+per-request writes); only delivery needs the long-running process.
 """
 
 import asyncio
