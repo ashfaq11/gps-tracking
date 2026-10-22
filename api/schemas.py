@@ -3,9 +3,9 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from .security import MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH
+from .security import MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH, password_problem
 
 
 class LocationIn(BaseModel):
@@ -491,6 +491,13 @@ Mobileish = Annotated[
 ]
 
 
+def _strong_password(value: str | None) -> str | None:
+    """A password being set must pass the rule in security.password_problem."""
+    if value is not None and (problem := password_problem(value)):
+        raise ValueError(problem)
+    return value
+
+
 class UserOut(BaseModel):
     """
     An account as the dashboard sees it.
@@ -572,6 +579,8 @@ class UserCreate(BaseModel):
         description="Ignored for an admin, which sees every device regardless.",
     )
 
+    _password_rule = field_validator("password")(_strong_password)
+
 
 class UserUpdate(BaseModel):
     """
@@ -598,6 +607,8 @@ class UserUpdate(BaseModel):
         max_length=MAX_PASSWORD_BYTES,
         description="Sets a new password. Existing sessions are signed out.",
     )
+
+    _password_rule = field_validator("password")(_strong_password)
 
 
 class SelfUpdate(BaseModel):
@@ -631,6 +642,8 @@ class SelfUpdate(BaseModel):
         description="Sets a new password. Requires current_password. Existing sessions are "
         "signed out, this one included.",
     )
+
+    _password_rule = field_validator("password")(_strong_password)
 
 
 class SignupRequest(BaseModel):
@@ -681,6 +694,8 @@ class SignupRequest(BaseModel):
             "(to order a tracker in the app)."
         ),
     )
+
+    _password_rule = field_validator("password")(_strong_password)
 
 
 class DeviceClaimRequest(BaseModel):

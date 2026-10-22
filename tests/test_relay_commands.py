@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover
 
 BASE = "/api/v1"
 API_KEY = "test-secret"
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
@@ -98,11 +98,11 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
         await self.enable("dev1")
         await self.client.post(
             f"{BASE}/users",
-            json={"username": "owner", "password": "owner1234", "role": "user", "devices": ["dev1"]},
+            json={"username": "owner", "password": "Owner-1234", "role": "user", "devices": ["dev1"]},
             headers=self.admin,
         )
         login = await self.client.post(
-            f"{BASE}/auth/login", json={"username": "owner", "password": "owner1234"}
+            f"{BASE}/auth/login", json={"username": "owner", "password": "Owner-1234"}
         )
         owner = {"Authorization": f"Bearer {login.json()['token']}"}
         self.assertEqual((await self.relay("dev1", "cut", headers=owner)).status_code, 403)
@@ -183,11 +183,11 @@ class TestRelayCommands(unittest.IsolatedAsyncioTestCase):
     async def test_only_an_admin_may_switch_it(self):
         await self.client.post(
             f"{BASE}/users",
-            json={"username": "owner", "password": "owner1234", "role": "user", "devices": ["dev1"]},
+            json={"username": "owner", "password": "Owner-1234", "role": "user", "devices": ["dev1"]},
             headers=self.admin,
         )
         login = await self.client.post(
-            f"{BASE}/auth/login", json={"username": "owner", "password": "owner1234"}
+            f"{BASE}/auth/login", json={"username": "owner", "password": "Owner-1234"}
         )
         owner = {"Authorization": f"Bearer {login.json()['token']}"}
         self.assertEqual((await self.enable("dev1", headers=owner)).status_code, 403)

@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover
     FASTAPI_AVAILABLE = False
 
 BASE = "/api/v1"
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 IMEI = "868120303372449"
 PRODUCT = {"name": "GT06 tracker", "description": "With relay", "price": 2499}
 ADDRESS = {
@@ -51,7 +51,7 @@ class TestShop(unittest.IsolatedAsyncioTestCase):
         return {"Authorization": f"Bearer {login.json()['token']}"}
 
     async def customer(self, username):
-        account = {"username": username, "password": "password123"}
+        account = {"username": username, "password": "Password-123"}
         created = await self.client.post(f"{BASE}/users", json=account, headers=self.admin)
         self.assertEqual(created.status_code, 201)
         return await self.sign_in(account)

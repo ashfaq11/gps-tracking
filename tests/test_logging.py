@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover
 
 BASE = "/api/v1"
 API_KEY = "test-secret"
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 FIX = {"device_id": "dev1", "latitude": 12.97, "longitude": 77.59}
 
 

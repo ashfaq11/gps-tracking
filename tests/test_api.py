@@ -25,7 +25,7 @@ FIX = {
 }
 
 
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
@@ -198,12 +198,12 @@ class TestReadEndpoints(ApiTestCase):
         await self.ingest({**FIX, "device_id": "d2", "latitude": 5.0})
         await self.client.post(
             f"{BASE}/users",
-            json={"username": "dispatcher", "password": "dispatch123", "role": "user", "devices": ["d2"]},
+            json={"username": "dispatcher", "password": "Dispatch-123", "role": "user", "devices": ["d2"]},
             headers=self.auth(),
         )
         token = (
             await self.client.post(
-                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "Dispatch-123"}
             )
         ).json()["token"]
 
@@ -366,12 +366,12 @@ class TestDeviceSubscriptions(ApiTestCase):
     async def test_a_non_admin_cannot_set_a_subscription(self):
         await self.client.post(
             f"{BASE}/users",
-            json={"username": "dispatcher", "password": "dispatch123", "role": "user"},
+            json={"username": "dispatcher", "password": "Dispatch-123", "role": "user"},
             headers=self.auth(),
         )
         token = (
             await self.client.post(
-                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "Dispatch-123"}
             )
         ).json()["token"]
 
@@ -388,7 +388,7 @@ class TestDeviceSubscriptions(ApiTestCase):
             f"{BASE}/users",
             json={
                 "username": "dispatcher",
-                "password": "dispatch123",
+                "password": "Dispatch-123",
                 "role": "user",
                 "devices": devices,
             },
@@ -396,7 +396,7 @@ class TestDeviceSubscriptions(ApiTestCase):
         )
         return (
             await self.client.post(
-                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "Dispatch-123"}
             )
         ).json()["token"]
 
@@ -670,7 +670,7 @@ class TestDeviceProfile(ApiTestCase):
             f"{BASE}/users",
             json={
                 "username": "dispatcher",
-                "password": "dispatch123",
+                "password": "Dispatch-123",
                 "role": "user",
                 "devices": [FIX["device_id"]],
             },
@@ -678,7 +678,7 @@ class TestDeviceProfile(ApiTestCase):
         )
         token = (
             await self.client.post(
-                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "Dispatch-123"}
             )
         ).json()["token"]
 
@@ -693,12 +693,12 @@ class TestDeviceProfile(ApiTestCase):
     async def test_a_scoped_account_cannot_touch_an_unassigned_device(self):
         await self.client.post(
             f"{BASE}/users",
-            json={"username": "dispatcher", "password": "dispatch123", "role": "user", "devices": []},
+            json={"username": "dispatcher", "password": "Dispatch-123", "role": "user", "devices": []},
             headers=self.auth(),
         )
         token = (
             await self.client.post(
-                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "Dispatch-123"}
             )
         ).json()["token"]
 
@@ -797,7 +797,7 @@ class TestDeviceOwnership(ApiTestCase):
             f"{BASE}/auth/signup",
             json={
                 "username": "priya",
-                "password": "a-good-passphrase",
+                "password": "A-good-passphrase1",
                 "device_id": FIX["device_id"],
             },
         )
@@ -811,7 +811,7 @@ class TestDeviceOwnership(ApiTestCase):
             f"{BASE}/auth/signup",
             json={
                 "username": "priya",
-                "password": "a-good-passphrase",
+                "password": "A-good-passphrase1",
                 "device_id": FIX["device_id"],
             },
         )
@@ -821,7 +821,7 @@ class TestDeviceOwnership(ApiTestCase):
             f"{BASE}/users",
             json={
                 "username": "dispatcher",
-                "password": "dispatch123",
+                "password": "Dispatch-123",
                 "role": "user",
                 "devices": [FIX["device_id"]],
             },
@@ -829,7 +829,7 @@ class TestDeviceOwnership(ApiTestCase):
         )
         token = (
             await self.client.post(
-                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "Dispatch-123"}
             )
         ).json()["token"]
 
@@ -849,7 +849,7 @@ class TestAdminOnboarding(ApiTestCase):
             f"{BASE}/users",
             json={
                 "username": "dispatcher",
-                "password": "dispatch123",
+                "password": "Dispatch-123",
                 "role": "user",
                 "devices": ["dev-a"],
             },
@@ -861,7 +861,7 @@ class TestAdminOnboarding(ApiTestCase):
         # device now conflicts rather than succeeding.
         signup = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "stranger", "password": "a-good-passphrase", "device_id": "dev-a"},
+            json={"username": "stranger", "password": "A-good-passphrase1", "device_id": "dev-a"},
         )
         self.assertEqual(signup.status_code, 409)
 
@@ -870,7 +870,7 @@ class TestAdminOnboarding(ApiTestCase):
             f"{BASE}/users",
             json={
                 "username": "dispatcher",
-                "password": "dispatch123",
+                "password": "Dispatch-123",
                 "role": "user",
                 "devices": ["never-seen-yet"],
             },
@@ -880,7 +880,7 @@ class TestAdminOnboarding(ApiTestCase):
 
         token = (
             await self.client.post(
-                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+                f"{BASE}/auth/login", json={"username": "dispatcher", "password": "Dispatch-123"}
             )
         ).json()["token"]
         listing = await self.client.get(f"{BASE}/devices", headers={"Authorization": f"Bearer {token}"})
@@ -913,7 +913,7 @@ class TestAdminOnboarding(ApiTestCase):
             f"{BASE}/auth/signup",
             json={
                 "username": "stranger",
-                "password": "a-good-passphrase",
+                "password": "A-good-passphrase1",
                 "device_id": "never-seen-yet",
             },
         )
@@ -923,7 +923,7 @@ class TestAdminOnboarding(ApiTestCase):
         await self.ingest({**FIX, "device_id": "dev-a"}, key=API_KEY)
         owner_signup = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "owner", "password": "a-good-passphrase", "device_id": "dev-a"},
+            json={"username": "owner", "password": "A-good-passphrase1", "device_id": "dev-a"},
         )
         owner_token = owner_signup.json()["token"]
 
@@ -933,7 +933,7 @@ class TestAdminOnboarding(ApiTestCase):
             f"{BASE}/users",
             json={
                 "username": "dispatcher",
-                "password": "dispatch123",
+                "password": "Dispatch-123",
                 "role": "user",
                 "devices": ["dev-a"],
             },
@@ -970,12 +970,12 @@ class TestAdminOnboarding(ApiTestCase):
         # admin's inventory is not everyone's business.
         await self.client.post(
             f"{BASE}/users",
-            json={"username": "bystander", "password": "bystander123", "role": "user"},
+            json={"username": "bystander", "password": "Bystander-123", "role": "user"},
             headers=self.auth(),
         )
         bystander_token = (
             await self.client.post(
-                f"{BASE}/auth/login", json={"username": "bystander", "password": "bystander123"}
+                f"{BASE}/auth/login", json={"username": "bystander", "password": "Bystander-123"}
             )
         ).json()["token"]
         bystander_listing = await self.client.get(
@@ -991,7 +991,7 @@ class TestAdminOnboarding(ApiTestCase):
             f"{BASE}/users",
             json={
                 "username": "earlybird",
-                "password": "earlybird123",
+                "password": "Early-bird123",
                 "role": "user",
                 "devices": ["shipping-soon"],
             },
@@ -1001,7 +1001,7 @@ class TestAdminOnboarding(ApiTestCase):
 
         token = (
             await self.client.post(
-                f"{BASE}/auth/login", json={"username": "earlybird", "password": "earlybird123"}
+                f"{BASE}/auth/login", json={"username": "earlybird", "password": "Early-bird123"}
             )
         ).json()["token"]
         listing = await self.client.get(f"{BASE}/devices", headers={"Authorization": f"Bearer {token}"})
@@ -1019,7 +1019,7 @@ class TestSignupAndClaim(ApiTestCase):
             f"{BASE}/auth/signup",
             json={
                 "username": "priya",
-                "password": "a-good-passphrase",
+                "password": "A-good-passphrase1",
                 "email": "priya@example.com",
                 "mobile": "+919876543210",
                 "device_id": FIX["device_id"],
@@ -1042,7 +1042,7 @@ class TestSignupAndClaim(ApiTestCase):
         # Someone with no tracker yet, signing up to order one in the app.
         response = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "newbie", "password": "a-good-passphrase"},
+            json={"username": "newbie", "password": "A-good-passphrase1"},
         )
         self.assertEqual(response.status_code, 201)
         body = response.json()
@@ -1055,7 +1055,7 @@ class TestSignupAndClaim(ApiTestCase):
     async def test_signup_rejects_a_device_that_has_never_reported(self):
         response = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "priya", "password": "a-good-passphrase", "device_id": "ghost-imei"},
+            json={"username": "priya", "password": "A-good-passphrase1", "device_id": "ghost-imei"},
         )
         self.assertEqual(response.status_code, 404)
 
@@ -1065,7 +1065,7 @@ class TestSignupAndClaim(ApiTestCase):
             f"{BASE}/auth/signup",
             json={
                 "username": "priya",
-                "password": "a-good-passphrase",
+                "password": "A-good-passphrase1",
                 "device_id": FIX["device_id"],
             },
         )
@@ -1073,14 +1073,14 @@ class TestSignupAndClaim(ApiTestCase):
             f"{BASE}/auth/signup",
             json={
                 "username": "rahul",
-                "password": "a-good-passphrase",
+                "password": "A-good-passphrase1",
                 "device_id": FIX["device_id"],
             },
         )
         self.assertEqual(response.status_code, 409)
         # And the account that lost the race was still not created.
         login = await self.client.post(
-            f"{BASE}/auth/login", json={"username": "rahul", "password": "a-good-passphrase"}
+            f"{BASE}/auth/login", json={"username": "rahul", "password": "A-good-passphrase1"}
         )
         self.assertEqual(login.status_code, 401)
 
@@ -1091,7 +1091,7 @@ class TestSignupAndClaim(ApiTestCase):
             f"{BASE}/auth/signup",
             json={
                 "username": "priya",
-                "password": "a-good-passphrase",
+                "password": "A-good-passphrase1",
                 "email": "priya@example.com",
                 "device_id": "dev-a",
             },
@@ -1099,7 +1099,7 @@ class TestSignupAndClaim(ApiTestCase):
 
         same_username = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "priya", "password": "another-passphrase", "device_id": "dev-b"},
+            json={"username": "priya", "password": "Another-passphrase1", "device_id": "dev-b"},
         )
         self.assertEqual(same_username.status_code, 409)
 
@@ -1107,7 +1107,7 @@ class TestSignupAndClaim(ApiTestCase):
             f"{BASE}/auth/signup",
             json={
                 "username": "someoneelse",
-                "password": "another-passphrase",
+                "password": "Another-passphrase1",
                 "email": "priya@example.com",
                 "device_id": "dev-b",
             },
@@ -1119,7 +1119,7 @@ class TestSignupAndClaim(ApiTestCase):
         await self.ingest({**FIX, "device_id": "dev-b"}, key=API_KEY)
         signup = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "priya", "password": "a-good-passphrase", "device_id": "dev-a"},
+            json={"username": "priya", "password": "A-good-passphrase1", "device_id": "dev-a"},
         )
         token = signup.json()["token"]
 
@@ -1142,11 +1142,11 @@ class TestSignupAndClaim(ApiTestCase):
         await self.ingest({**FIX, "device_id": "dev-b"}, key=API_KEY)
         await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "priya", "password": "a-good-passphrase", "device_id": "dev-a"},
+            json={"username": "priya", "password": "A-good-passphrase1", "device_id": "dev-a"},
         )
         second = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "rahul", "password": "a-good-passphrase", "device_id": "dev-b"},
+            json={"username": "rahul", "password": "A-good-passphrase1", "device_id": "dev-b"},
         )
         token = second.json()["token"]  # rahul owns dev-b
 
@@ -1161,14 +1161,14 @@ class TestSignupAndClaim(ApiTestCase):
         await self.ingest({**FIX, "device_id": "dev-a"}, key=API_KEY)
         signup = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "priya", "password": "a-good-passphrase", "device_id": "dev-a"},
+            json={"username": "priya", "password": "A-good-passphrase1", "device_id": "dev-a"},
         )
         priya_token = signup.json()["token"]
 
         # Not yet released: a second signup for the same device still conflicts.
         blocked = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "rahul", "password": "a-good-passphrase", "device_id": "dev-a"},
+            json={"username": "rahul", "password": "A-good-passphrase1", "device_id": "dev-a"},
         )
         self.assertEqual(blocked.status_code, 409)
 
@@ -1180,7 +1180,7 @@ class TestSignupAndClaim(ApiTestCase):
         # Now a new owner can claim it.
         resold = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "rahul", "password": "a-good-passphrase", "device_id": "dev-a"},
+            json={"username": "rahul", "password": "A-good-passphrase1", "device_id": "dev-a"},
         )
         self.assertEqual(resold.status_code, 201)
 
@@ -1198,7 +1198,7 @@ class TestSignupAndClaim(ApiTestCase):
         await self.ingest({**FIX, "device_id": "dev-a"}, key=API_KEY)
         signup = await self.client.post(
             f"{BASE}/auth/signup",
-            json={"username": "priya", "password": "a-good-passphrase", "device_id": "dev-a"},
+            json={"username": "priya", "password": "A-good-passphrase1", "device_id": "dev-a"},
         )
         token = signup.json()["token"]
 

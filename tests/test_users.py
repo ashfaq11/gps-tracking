@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover
     FASTAPI_AVAILABLE = False
 
 BASE = "/api/v1"
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 
 
 @unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
@@ -47,7 +47,7 @@ class AccountTestCase(unittest.IsolatedAsyncioTestCase):
         return {"Authorization": f"Bearer {token}"}
 
     async def create_user(self, token, **overrides):
-        payload = {"username": "dispatcher", "password": "dispatch123", "role": "user"}
+        payload = {"username": "dispatcher", "password": "Dispatch-123", "role": "user"}
         payload.update(overrides)
         return await self.client.post(f"{BASE}/users", json=payload, headers=self.auth(token))
 
@@ -62,7 +62,7 @@ class TestBootstrap(AccountTestCase):
         client = AsgiClient(create_app(ApiConfig(backend="memory")))
         async with client:
             response = await client.post(
-                f"{BASE}/auth/login", json={"username": "admin", "password": "adminpassword"}
+                f"{BASE}/auth/login", json={"username": "admin", "password": "Admin-password1"}
             )
             self.assertEqual(response.status_code, 401)
 
@@ -104,7 +104,7 @@ class TestAdminOnly(AccountTestCase):
     async def test_a_non_admin_cannot_list_users(self):
         admin = await self.admin_token()
         await self.create_user(admin)
-        token = (await self.login("dispatcher", "dispatch123")).json()["token"]
+        token = (await self.login("dispatcher", "Dispatch-123")).json()["token"]
 
         response = await self.client.get(f"{BASE}/users", headers=self.auth(token))
         # 403 not 401: signing in again would not help, and the client needs
@@ -114,7 +114,7 @@ class TestAdminOnly(AccountTestCase):
     async def test_a_non_admin_cannot_create_a_user(self):
         admin = await self.admin_token()
         await self.create_user(admin)
-        token = (await self.login("dispatcher", "dispatch123")).json()["token"]
+        token = (await self.login("dispatcher", "Dispatch-123")).json()["token"]
 
         response = await self.create_user(token, username="sneaky")
         self.assertEqual(response.status_code, 403)
@@ -138,6 +138,31 @@ class TestCreateAndEdit(AccountTestCase):
         token = await self.admin_token()
         response = await self.create_user(token, password="short")
         self.assertEqual(response.status_code, 422)
+
+    async def test_a_password_without_the_usual_mix_is_refused(self):
+        token = await self.admin_token()
+        # Long enough, but each lacks one of: upper, lower, digit, symbol.
+        for weak in ("all-lower-case-1", "ALL-UPPER-CASE-1", "No-digits-here", "NoSymbols123"):
+            response = await self.create_user(token, password=weak)
+            self.assertEqual(response.status_code, 422, weak)
+            self.assertIn("upper-case letter", str(response.json()["detail"]), weak)
+        self.assertEqual((await self.create_user(token, password="Strong-pass1")).status_code, 201)
+
+    async def test_an_older_weaker_password_still_signs_in(self):
+        # The rule applies when a password is set, not at sign-in: an account
+        # made before it (here, the bootstrap admin) keeps working.
+        app = create_app(
+            ApiConfig(
+                backend="memory",
+                bootstrap_admin_username=ADMIN["username"],
+                bootstrap_admin_password="weakbutold",
+            )
+        )
+        async with AsgiClient(app) as client:
+            response = await client.post(
+                f"{BASE}/auth/login", json={"username": ADMIN["username"], "password": "weakbutold"}
+            )
+        self.assertEqual(response.status_code, 200)
 
     async def test_an_admin_is_given_no_device_rows(self):
         # An admin sees every device, so per-device assignments would be
@@ -171,7 +196,7 @@ class TestDeactivation(AccountTestCase):
     async def test_deactivating_invalidates_a_token_already_issued(self):
         admin = await self.admin_token()
         user_id = (await self.create_user(admin)).json()["id"]
-        token = (await self.login("dispatcher", "dispatch123")).json()["token"]
+        token = (await self.login("dispatcher", "Dispatch-123")).json()["token"]
         self.assertEqual(
             (await self.client.get(f"{BASE}/auth/me", headers=self.auth(token))).status_code, 200
         )
@@ -193,7 +218,7 @@ class TestDeactivation(AccountTestCase):
             f"{BASE}/users/{user_id}", json={"is_active": False}, headers=self.auth(admin)
         )
 
-        self.assertEqual((await self.login("dispatcher", "dispatch123")).status_code, 401)
+        self.assertEqual((await self.login("dispatcher", "Dispatch-123")).status_code, 401)
 
     async def test_reactivating_restores_sign_in(self):
         admin = await self.admin_token()
@@ -205,7 +230,7 @@ class TestDeactivation(AccountTestCase):
             f"{BASE}/users/{user_id}", json={"is_active": True}, headers=self.auth(admin)
         )
 
-        self.assertEqual((await self.login("dispatcher", "dispatch123")).status_code, 200)
+        self.assertEqual((await self.login("dispatcher", "Dispatch-123")).status_code, 200)
 
     async def test_an_admin_cannot_deactivate_themselves(self):
         token = await self.admin_token()
@@ -228,16 +253,16 @@ class TestDeactivation(AccountTestCase):
     async def test_changing_a_password_signs_the_account_out(self):
         admin = await self.admin_token()
         user_id = (await self.create_user(admin)).json()["id"]
-        token = (await self.login("dispatcher", "dispatch123")).json()["token"]
+        token = (await self.login("dispatcher", "Dispatch-123")).json()["token"]
 
         await self.client.patch(
-            f"{BASE}/users/{user_id}", json={"password": "brandnew123"}, headers=self.auth(admin)
+            f"{BASE}/users/{user_id}", json={"password": "Brand-new123"}, headers=self.auth(admin)
         )
 
         self.assertEqual(
             (await self.client.get(f"{BASE}/auth/me", headers=self.auth(token))).status_code, 401
         )
-        self.assertEqual((await self.login("dispatcher", "brandnew123")).status_code, 200)
+        self.assertEqual((await self.login("dispatcher", "Brand-new123")).status_code, 200)
 
 
 class TestSelfService(AccountTestCase):
@@ -245,7 +270,7 @@ class TestSelfService(AccountTestCase):
 
     async def _signed_up_token(self) -> str:
         await self.create_user(await self.admin_token())
-        return (await self.login("dispatcher", "dispatch123")).json()["token"]
+        return (await self.login("dispatcher", "Dispatch-123")).json()["token"]
 
     async def test_can_update_its_own_full_name_and_contact_details(self):
         token = await self._signed_up_token()
@@ -277,7 +302,7 @@ class TestSelfService(AccountTestCase):
     async def test_changing_password_requires_the_current_one(self):
         token = await self._signed_up_token()
         response = await self.client.patch(
-            f"{BASE}/auth/me", json={"password": "brandnew123"}, headers=self.auth(token)
+            f"{BASE}/auth/me", json={"password": "Brand-new123"}, headers=self.auth(token)
         )
         self.assertEqual(response.status_code, 403)
 
@@ -285,7 +310,7 @@ class TestSelfService(AccountTestCase):
         token = await self._signed_up_token()
         response = await self.client.patch(
             f"{BASE}/auth/me",
-            json={"current_password": "wrongone", "password": "brandnew123"},
+            json={"current_password": "wrongone", "password": "Brand-new123"},
             headers=self.auth(token),
         )
         self.assertEqual(response.status_code, 403)
@@ -294,7 +319,7 @@ class TestSelfService(AccountTestCase):
         token = await self._signed_up_token()
         response = await self.client.patch(
             f"{BASE}/auth/me",
-            json={"current_password": "dispatch123", "password": "brandnew123"},
+            json={"current_password": "Dispatch-123", "password": "Brand-new123"},
             headers=self.auth(token),
         )
         self.assertEqual(response.status_code, 200)
@@ -303,7 +328,7 @@ class TestSelfService(AccountTestCase):
         self.assertEqual(
             (await self.client.get(f"{BASE}/auth/me", headers=self.auth(token))).status_code, 401
         )
-        self.assertEqual((await self.login("dispatcher", "brandnew123")).status_code, 200)
+        self.assertEqual((await self.login("dispatcher", "Brand-new123")).status_code, 200)
 
     async def test_taking_someone_elses_email_conflicts(self):
         admin = await self.admin_token()
@@ -318,7 +343,7 @@ class TestSelfService(AccountTestCase):
     async def test_keeping_your_own_email_is_not_a_conflict(self):
         admin = await self.admin_token()
         await self.create_user(admin, email="dispatch@example.com")
-        token = (await self.login("dispatcher", "dispatch123")).json()["token"]
+        token = (await self.login("dispatcher", "Dispatch-123")).json()["token"]
 
         response = await self.client.patch(
             f"{BASE}/auth/me",

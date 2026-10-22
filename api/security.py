@@ -17,6 +17,32 @@ import bcrypt
 MAX_PASSWORD_BYTES = 72
 MIN_PASSWORD_LENGTH = 8
 
+PASSWORD_RULE = (
+    f"Use at least {MIN_PASSWORD_LENGTH} characters, with an upper-case letter, "
+    "a lower-case letter, a digit and a symbol."
+)
+
+
+def password_problem(password: str) -> str | None:
+    """
+    Why `password` is too weak to set, or None if it will do.
+
+    The usual rule: MIN_PASSWORD_LENGTH or more, mixing upper and lower case,
+    a digit and a symbol. Checked wherever a password is *set* (accounts,
+    signup, changing one's own) -- never at sign-in, so an older, weaker
+    password keeps working until it is next changed. The apps check the same
+    rule before sending (core/Forms.kt, the web forms).
+    """
+    if (
+        len(password) < MIN_PASSWORD_LENGTH
+        or not any(c.islower() for c in password)
+        or not any(c.isupper() for c in password)
+        or not any(c.isdigit() for c in password)
+        or all(c.isalnum() or c.isspace() for c in password)
+    ):
+        return PASSWORD_RULE
+    return None
+
 
 def hash_password(password: str) -> str:
     """bcrypt hash, salt included, safe to store."""

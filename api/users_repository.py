@@ -25,6 +25,18 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _bootstrap_admin(username: str, password: str) -> UserCreate:
+    """
+    The first admin's account, from BOOTSTRAP_ADMIN_PASSWORD. Checked like
+    any other account except for the password-strength rule: that password
+    is the operator's, set once in the server's environment, and refusing
+    it would leave a fresh database with no way in at all.
+    """
+    return UserCreate(
+        username=username, password="Bootstrap-check-1", role="admin", full_name="Bootstrap"
+    ).model_copy(update={"password": password})
+
+
 @dataclass
 class PushSubscription:
     """A browser's Web Push endpoint and the two keys needed to encrypt a
@@ -327,7 +339,7 @@ class InMemoryUserRepository:
         if self._rows:
             return False
         await self.create_user(
-            UserCreate(username=username, password=password, role="admin", full_name="Bootstrap")
+            _bootstrap_admin(username, password)
         )
         return True
 
@@ -639,7 +651,7 @@ class PostgresUserRepository:
             if await conn.fetchval("SELECT 1 FROM users LIMIT 1"):
                 return False
         await self.create_user(
-            UserCreate(username=username, password=password, role="admin", full_name="Bootstrap")
+            _bootstrap_admin(username, password)
         )
         return True
 

@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover
     FASTAPI_AVAILABLE = False
 
 BASE = "/api/v1"
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 IMEI = "868120303372449"
 
 
@@ -97,11 +97,11 @@ class TestTrackers(unittest.IsolatedAsyncioTestCase):
     async def test_admin_only(self):
         await self.client.post(
             f"{BASE}/users",
-            json={"username": "owner", "password": "owner1234", "role": "user", "devices": []},
+            json={"username": "owner", "password": "Owner-1234", "role": "user", "devices": []},
             headers=self.admin,
         )
         login = await self.client.post(
-            f"{BASE}/auth/login", json={"username": "owner", "password": "owner1234"}
+            f"{BASE}/auth/login", json={"username": "owner", "password": "Owner-1234"}
         )
         owner = {"Authorization": f"Bearer {login.json()['token']}"}
         for method, path in (
@@ -159,11 +159,11 @@ class TestTrackers(unittest.IsolatedAsyncioTestCase):
     async def test_only_an_admin_may_change_the_setting(self):
         await self.client.post(
             f"{BASE}/users",
-            json={"username": "owner", "password": "owner1234", "role": "user", "devices": []},
+            json={"username": "owner", "password": "Owner-1234", "role": "user", "devices": []},
             headers=self.admin,
         )
         login = await self.client.post(
-            f"{BASE}/auth/login", json={"username": "owner", "password": "owner1234"}
+            f"{BASE}/auth/login", json={"username": "owner", "password": "Owner-1234"}
         )
         owner = {"Authorization": f"Bearer {login.json()['token']}"}
         put = await self.client.put(

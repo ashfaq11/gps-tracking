@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover
 T0 = datetime(2026, 9, 27, 8, 0, tzinfo=timezone.utc)
 BASE = "/api/v1"
 API_KEY = "test-secret"
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 
 
 def fix(minute: float, speed: int | None, lat: float = 12.97, lng: float = 77.59) -> ReportFix:
@@ -260,14 +260,14 @@ class TestReportEndpoint(unittest.IsolatedAsyncioTestCase):
             f"{BASE}/users",
             json={
                 "username": "owner",
-                "password": "owner1234",
+                "password": "Owner-1234",
                 "role": "user",
                 "devices": ["dev1"],
             },
             headers=self.admin,
         )
         login = await self.client.post(
-            f"{BASE}/auth/login", json={"username": "owner", "password": "owner1234"}
+            f"{BASE}/auth/login", json={"username": "owner", "password": "Owner-1234"}
         )
         self.owner = {"Authorization": f"Bearer {login.json()['token']}"}
         for device_id, lat, speed in (("dev1", 12.97, 30), ("dev1", 12.98, 45), ("dev2", 13.0, 60)):
