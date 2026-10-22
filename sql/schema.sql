@@ -81,6 +81,10 @@ CREATE TABLE IF NOT EXISTS users (
 -- columns existed.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email  TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile TEXT;
+-- Geofences (and their report) are a feature an admin switches on per
+-- account; off by default, so existing accounts lose nothing they used to
+-- have only if an admin turns it on for them. Admins always have it.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS geofence_enabled BOOLEAN NOT NULL DEFAULT false;
 DO $users_email_unique$
 BEGIN
     ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE (email);

@@ -132,3 +132,18 @@ async def require_admin(user: AuthenticatedUser = Depends(current_user)) -> Auth
             status_code=status.HTTP_403_FORBIDDEN, detail="This endpoint is for administrators"
         )
     return user
+
+
+async def require_geofences(user: AuthenticatedUser = Depends(current_user)) -> AuthenticatedUser:
+    """
+    Geofences and their report are switched on per account by an admin
+    (`users.geofence_enabled`); an admin always has them. Without it the
+    feature answers 403 -- it is the feature that is withheld, not any
+    device, so this is not the 404 of device scoping.
+    """
+    if not user.can_use_geofences:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Geofences are not enabled for this account. Ask your administrator.",
+        )
+    return user

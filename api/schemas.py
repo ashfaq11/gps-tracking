@@ -534,6 +534,11 @@ class UserOut(BaseModel):
     mobile: str | None = Field(default=None, description="Contact number. Not verified.")
     role: Role
     is_active: bool = Field(description="False once an admin deactivates the account.")
+    geofence_enabled: bool = Field(
+        default=False,
+        description="Geofences and the geofence report, switched on by an admin. Admins always "
+        "have them, whatever this says.",
+    )
     devices: list[str] = Field(
         default_factory=list,
         description="Devices this account may see. Empty for an admin, which sees all of them.",
@@ -574,6 +579,7 @@ class UserCreate(BaseModel):
     email: Emailish = None
     mobile: Mobileish = None
     role: Role = "user"
+    geofence_enabled: bool = Field(default=False, description="Allow geofences and their report.")
     devices: list[str] = Field(
         default_factory=list,
         description="Ignored for an admin, which sees every device regardless.",
@@ -595,6 +601,9 @@ class UserUpdate(BaseModel):
     email: Emailish = None
     mobile: Mobileish = None
     role: Role | None = None
+    geofence_enabled: bool | None = Field(
+        default=None, description="Switch geofences and their report on or off for the account."
+    )
     is_active: bool | None = Field(
         default=None, description="Set false to deactivate, true to restore."
     )

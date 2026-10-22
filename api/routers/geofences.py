@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from ..deps import current_user, get_geofences
+from ..deps import current_user, get_geofences, require_geofences
 from ..geofence_report import summarize_geofences
 from ..geofences_repository import GeofenceFields, GeofenceRepository, GeofenceShape
 from ..schemas import (
@@ -31,7 +31,11 @@ from ..schemas import (
 )
 from ..users_repository import AuthenticatedUser
 
-router = APIRouter(prefix="/geofences", tags=["geofences"])
+# Every geofence endpoint -- drawing them, their events and the report --
+# needs the account's geofence feature (deps.require_geofences).
+router = APIRouter(
+    prefix="/geofences", tags=["geofences"], dependencies=[Depends(require_geofences)]
+)
 
 
 def _not_found(geofence_id: int) -> HTTPException:
