@@ -303,6 +303,92 @@ CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx ON push_subscriptions (us
 -- push messages outside the database transaction entirely.
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- Alerts history: every notification, kept.
+--
+-- One row per alert a vehicle raised -- started/stopped, ignition on/off,
+-- a geofence crossing that was set to alert, overspeed, harsh braking or
+-- acceleration -- written by the same triggers that find them, so both
+-- writers (gateway and ingest) are covered and a phone being off or an app
+-- not installed loses nothing. The apps and the dashboard read this table
+-- (GET /alerts) instead of each keeping its own copy on the device, so
+-- the history is the same everywhere and cannot be cleared from a screen.
+--
+-- Nothing deletes from it except purge_old_alerts(): the history is kept
+-- 90 days (3 months).
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS vehicle_alerts (
+    id            BIGSERIAL        PRIMARY KEY,
+    device_id     TEXT             NOT NULL,
+    kind          TEXT             NOT NULL CHECK (kind IN (
+        'moving', 'stopped', 'ignition_on', 'ignition_off',
+        'geofence_enter', 'geofence_exit',
+        'overspeed', 'harsh_braking', 'harsh_acceleration')),
+    -- When it happened (the device's own clock unless plainly wrong), not
+    -- when the row was written.
+    occurred_at   TIMESTAMPTZ      NOT NULL,
+    recorded_at   TIMESTAMPTZ      NOT NULL DEFAULT now(),
+    latitude      DOUBLE PRECISION,
+    longitude     DOUBLE PRECISION,
+    -- Speed when it happened; for harsh driving the speed after the change.
+    speed_kmh     INT,
+    from_kmh      INT,             -- harsh driving: the speed before
+    limit_kmh     INT,             -- overspeed: the limit that was crossed
+    geofence_id   BIGINT,
+    geofence_name TEXT,
+    -- Who drew the geofence: only they (and an admin) are shown its alerts.
+    owner_id      BIGINT
+);
+
+CREATE INDEX IF NOT EXISTS vehicle_alerts_time_idx ON vehicle_alerts (occurred_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS vehicle_alerts_device_idx ON vehicle_alerts (device_id, occurred_at DESC);
+
+-- A vehicle's overspeed limit; no row means DEFAULT_SPEED_LIMIT_KMH (80).
+-- Per vehicle, so the account that owns it and an admin see the same alerts.
+CREATE TABLE IF NOT EXISTS device_speed_limits (
+    device_id  TEXT        PRIMARY KEY,
+    limit_kmh  INT         NOT NULL CHECK (limit_kmh BETWEEN 20 AND 200),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- How far each account has read the history -- what its unread badge counts
+-- from, kept here so reading on the web clears the app's badge too.
+CREATE TABLE IF NOT EXISTS alert_reads (
+    user_id    BIGINT      PRIMARY KEY,
+    seen_id    BIGINT      NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- The time of a fix: the device's clock unless it is plainly wrong (ahead of
+-- arrival, or a month behind) -- the rule check_geofences and the apps use.
+CREATE OR REPLACE FUNCTION fix_event_time(p_fixed_at TIMESTAMPTZ, p_received_at TIMESTAMPTZ)
+RETURNS TIMESTAMPTZ AS $$
+    SELECT CASE
+        WHEN p_fixed_at IS NULL
+          OR p_fixed_at > p_received_at + INTERVAL '10 minutes'
+          OR p_fixed_at < p_received_at - INTERVAL '30 days'
+        THEN p_received_at
+        ELSE p_fixed_at
+    END;
+$$ LANGUAGE sql IMMUTABLE;
+
+-- The one way a trigger records an alert. SECURITY DEFINER for the reason
+-- check_geofences is: it runs inside position inserts from writers that
+-- were never given this table.
+CREATE OR REPLACE FUNCTION record_vehicle_alert(
+    p_device_id TEXT, p_kind TEXT, p_at TIMESTAMPTZ,
+    p_lat DOUBLE PRECISION DEFAULT NULL, p_lng DOUBLE PRECISION DEFAULT NULL,
+    p_speed INT DEFAULT NULL, p_from INT DEFAULT NULL, p_limit INT DEFAULT NULL,
+    p_geofence_id BIGINT DEFAULT NULL, p_geofence_name TEXT DEFAULT NULL,
+    p_owner_id BIGINT DEFAULT NULL
+) RETURNS void AS $$
+    INSERT INTO vehicle_alerts (device_id, kind, occurred_at, latitude, longitude,
+                                speed_kmh, from_kmh, limit_kmh, geofence_id, geofence_name, owner_id)
+    VALUES (p_device_id, p_kind, p_at, p_lat, p_lng,
+            p_speed, p_from, p_limit, p_geofence_id, p_geofence_name, p_owner_id);
+$$ LANGUAGE sql SECURITY DEFINER SET search_path = public;
+
 CREATE OR REPLACE FUNCTION notify_vehicle_motion() RETURNS trigger AS $$
 DECLARE
     previous_speed INT;
@@ -372,6 +458,13 @@ BEGIN
             RETURN NEW;
         END IF;
     END IF;
+
+    PERFORM record_vehicle_alert(
+        NEW.device_id,
+        CASE WHEN is_moving THEN 'moving' ELSE 'stopped' END,
+        fix_event_time(NEW.fixed_at, NEW.received_at),
+        NEW.latitude, NEW.longitude, NEW.speed_kmh
+    );
 
     PERFORM pg_notify('vehicle_motion', json_build_object(
         'device_id', NEW.device_id,
@@ -524,6 +617,25 @@ CREATE TRIGGER device_status_log_flip
     AFTER UPDATE ON device_status
     FOR EACH ROW WHEN (OLD.ignition IS DISTINCT FROM NEW.ignition)
     EXECUTE FUNCTION log_ignition_change();
+
+-- Ignition switches are alerts too: each flip (not the first report, which
+-- only says where it stands) is a row of the alerts history.
+CREATE OR REPLACE FUNCTION alert_ignition_change() RETURNS trigger AS $$
+BEGIN
+    PERFORM record_vehicle_alert(
+        NEW.device_id,
+        CASE WHEN NEW.ignition THEN 'ignition_on' ELSE 'ignition_off' END,
+        NEW.ignition_changed_at
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS device_status_alert_flip ON device_status;
+CREATE TRIGGER device_status_alert_flip
+    AFTER UPDATE ON device_status
+    FOR EACH ROW WHEN (OLD.ignition IS DISTINCT FROM NEW.ignition)
+    EXECUTE FUNCTION alert_ignition_change();
 
 -- Vehicles already known when the log is created start from their current
 -- state, so an engine that is running right now is not missed until its
@@ -758,6 +870,11 @@ BEGIN
 
         IF (crossing = 'exit' AND g.alert_on_exit) OR (crossing = 'enter' AND g.alert_on_enter) THEN
             SELECT name INTO device_name FROM device_subscriptions WHERE device_id = NEW.device_id;
+            PERFORM record_vehicle_alert(
+                NEW.device_id, 'geofence_' || crossing, crossed_at,
+                NEW.latitude, NEW.longitude, NULL, NULL, NULL,
+                g.id, g.name, g.owner_id
+            );
             PERFORM pg_notify('geofence_event', json_build_object(
                 'id', event_id,
                 'geofence_id', g.id,
@@ -1188,6 +1305,129 @@ BEGIN
 END
 $grant_shop$;
 
+
+-- ---------------------------------------------------------------------------
+-- Driving alerts: overspeed and harsh braking / acceleration.
+--
+-- The rules the apps used to apply on each phone (and the driving report
+-- applies to history), now found here once so every screen agrees:
+--   overspeed  -- the speed crosses above the vehicle's limit (80 unless set
+--                 in device_speed_limits); once per 5 minutes per vehicle.
+--   harsh      -- the speed changes by 40 km/h or more between two fixes at
+--                 most 15 seconds apart (braking down, acceleration up).
+-- Fixes without a GPS lock, or reading over 200 km/h, are junk and ignored,
+-- and "previous" means strictly earlier, as in notify_vehicle_motion.
+-- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION record_driving_alerts() RETURNS trigger AS $$
+DECLARE
+    prev      RECORD;
+    max_kmh   CONSTANT INT := 200;
+    limit_now INT;
+    at_new    TIMESTAMPTZ;
+    at_prev   TIMESTAMPTZ;
+    gap       DOUBLE PRECISION;
+BEGIN
+    IF NEW.speed_kmh IS NULL OR NEW.speed_kmh > max_kmh
+       OR NEW.gps_fixed IS FALSE OR NEW.satellites = 0 THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT speed_kmh, fixed_at, received_at, gps_fixed, satellites INTO prev
+    FROM device_locations
+    WHERE device_id = NEW.device_id
+      AND received_at <= NEW.received_at
+      AND (received_at, id) < (NEW.received_at, NEW.id)
+    ORDER BY received_at DESC, id DESC
+    LIMIT 1;
+
+    IF NOT FOUND OR prev.speed_kmh IS NULL OR prev.speed_kmh > max_kmh
+       OR prev.gps_fixed IS FALSE OR prev.satellites = 0 THEN
+        RETURN NEW;
+    END IF;
+
+    at_new  := fix_event_time(NEW.fixed_at, NEW.received_at);
+    at_prev := fix_event_time(prev.fixed_at, prev.received_at);
+
+    SELECT COALESCE(
+        (SELECT limit_kmh FROM device_speed_limits WHERE device_id = NEW.device_id), 80
+    ) INTO limit_now;
+
+    IF NEW.speed_kmh > limit_now AND prev.speed_kmh <= limit_now
+       AND NOT EXISTS (
+           SELECT 1 FROM vehicle_alerts
+           WHERE device_id = NEW.device_id AND kind = 'overspeed'
+             AND occurred_at > at_new - INTERVAL '5 minutes'
+             AND occurred_at <= at_new
+       ) THEN
+        PERFORM record_vehicle_alert(
+            NEW.device_id, 'overspeed', at_new, NEW.latitude, NEW.longitude,
+            NEW.speed_kmh, NULL, limit_now
+        );
+    END IF;
+
+    gap := EXTRACT(EPOCH FROM (at_new - at_prev));
+    IF gap > 0 AND gap <= 15 AND abs(NEW.speed_kmh - prev.speed_kmh) >= 40 THEN
+        PERFORM record_vehicle_alert(
+            NEW.device_id,
+            CASE WHEN NEW.speed_kmh < prev.speed_kmh THEN 'harsh_braking' ELSE 'harsh_acceleration' END,
+            at_new, NEW.latitude, NEW.longitude, NEW.speed_kmh, prev.speed_kmh
+        );
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS device_locations_driving_alerts ON device_locations;
+CREATE TRIGGER device_locations_driving_alerts
+    AFTER INSERT ON device_locations
+    FOR EACH ROW EXECUTE FUNCTION record_driving_alerts();
+
+-- The API reads the history and writes speed limits and read marks, with the
+-- same grant-to-the-writers reasoning as the geofence tables above.
+DO $grant_alerts$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT DISTINCT who FROM (
+            SELECT c.relowner::regrole::text AS who
+            FROM pg_class c WHERE c.relname = 'device_locations'
+            UNION
+            SELECT a.grantee::regrole::text
+            FROM pg_class c, aclexplode(c.relacl) a
+            WHERE c.relname = 'device_locations' AND a.privilege_type = 'INSERT' AND a.grantee <> 0
+        ) AS writers
+    LOOP
+        EXECUTE format('GRANT SELECT, DELETE ON vehicle_alerts TO %s', r.who);
+        EXECUTE format('GRANT SELECT, INSERT, UPDATE ON device_speed_limits, alert_reads TO %s', r.who);
+        EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE vehicle_alerts_id_seq TO %s', r.who);
+    END LOOP;
+END
+$grant_alerts$;
+
+-- Alerts older than keep_days (90 by default, 3 months), in batches like
+-- purge_old_locations; call until it returns 0 (maintenance.sh does).
+CREATE OR REPLACE FUNCTION purge_old_alerts(keep_days INT DEFAULT 90, batch_size INT DEFAULT 50000)
+RETURNS BIGINT AS $$
+DECLARE
+    removed BIGINT;
+BEGIN
+    IF keep_days IS NULL OR keep_days < 30 THEN
+        RAISE EXCEPTION 'keep_days must be at least 30 (got %)', keep_days;
+    END IF;
+    WITH doomed AS (
+        SELECT id FROM vehicle_alerts
+        WHERE occurred_at < now() - make_interval(days => keep_days)
+        LIMIT batch_size
+    ), gone AS (
+        DELETE FROM vehicle_alerts WHERE id IN (SELECT id FROM doomed) RETURNING 1
+    )
+    SELECT count(*) INTO removed FROM gone;
+    RETURN removed;
+END;
+$$ LANGUAGE plpgsql;
 
 -- ---------------------------------------------------------------------------
 -- Data retention.

@@ -14,6 +14,7 @@
 # /etc/gps-tracking-maintenance.env:
 #
 #   LOCATION_RETENTION_DAYS=180   # 0 = keep everything; minimum 90
+#   ALERT_RETENTION_DAYS=90       # the alerts history (notifications); minimum 30
 #   BACKUP_KEEP_DAYS=7
 #   BACKUP_DIR=/var/backups/gps-tracking
 #   BACKUP_S3_URI=s3://bucket/gps-tracking   # needs the aws CLI + an instance role
@@ -82,6 +83,17 @@ else
   # Hand the freed pages back for reuse and refresh the planner's numbers.
   (( total > 0 )) && run_psql -q -c "VACUUM (ANALYZE) device_locations" && log "vacuumed"
 fi
+
+# 3. Alerts history: kept ALERT_RETENTION_DAYS (90 = 3 months) ----------------
+ALERT_DAYS="${ALERT_RETENTION_DAYS:-90}"
+alerts=0
+while :; do
+  n=$(run_psql -tAq -v ON_ERROR_STOP=1 -c "SELECT purge_old_alerts($ALERT_DAYS)")
+  alerts=$((alerts + n))
+  (( n == 0 )) && break
+  sleep 1
+done
+log "purged $alerts alerts older than $ALERT_DAYS days"
 
 # Disk check: the one alarm this box needs.
 used=$(df --output=pcent / | tail -1 | tr -dc '0-9')

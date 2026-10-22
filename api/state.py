@@ -23,6 +23,11 @@ from .trackers_repository import (
     PostgresTrackerRepository,
     TrackerRepository,
 )
+from .alerts_repository import (
+    AlertRepository,
+    InMemoryAlertRepository,
+    PostgresAlertRepository,
+)
 from .commands_repository import (
     CommandRepository,
     InMemoryCommandRepository,
@@ -142,6 +147,17 @@ async def ensure_commands(app: FastAPI) -> CommandRepository:
     return app.state.commands
 
 
+async def ensure_alerts(app: FastAPI) -> AlertRepository:
+    """The alerts history, sharing the location repository's pool."""
+    await ensure_repository(app)
+    if app.state.alerts is None:
+        pool = app.state.pool
+        app.state.alerts = (
+            PostgresAlertRepository(pool) if pool is not None else InMemoryAlertRepository()
+        )
+    return app.state.alerts
+
+
 async def ensure_trackers(app: FastAPI) -> TrackerRepository:
     """The tracker allowlist, sharing the location repository's pool."""
     await ensure_repository(app)
@@ -197,6 +213,7 @@ async def close_repository(app: FastAPI) -> None:
     app.state.users = None
     app.state.geofences = None
     app.state.commands = None
+    app.state.alerts = None
     app.state.trackers = None
     app.state.shop = None
     app.state.pool = None
@@ -209,6 +226,7 @@ def init_state(app: FastAPI) -> None:
     app.state.users = None
     app.state.geofences = None
     app.state.commands = None
+    app.state.alerts = None
     app.state.trackers = None
     app.state.shop = None
     app.state.pool = None

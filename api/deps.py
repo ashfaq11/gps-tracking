@@ -5,11 +5,13 @@ from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBea
 
 from .config import ApiConfig
 from .repository import LocationRepository
+from .alerts_repository import AlertRepository
 from .commands_repository import CommandRepository
 from .geofences_repository import GeofenceRepository
 from .shop_repository import ShopRepository
 from .trackers_repository import TrackerRepository
 from .state import (
+    ensure_alerts,
     ensure_commands,
     ensure_geofences,
     ensure_repository,
@@ -78,6 +80,11 @@ _UNAUTHENTICATED = HTTPException(
 async def get_geofences(request: Request) -> GeofenceRepository:
     """Built on first use, sharing the location repository's pool."""
     return await ensure_geofences(request.app)
+
+
+async def get_alerts(request: Request) -> AlertRepository:
+    """Built on first use, sharing the location repository's pool."""
+    return await ensure_alerts(request.app)
 
 
 async def get_commands(request: Request) -> CommandRepository:
