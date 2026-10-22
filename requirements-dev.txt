@@ -1,5 +1,4 @@
 -r requirements.txt
 
-# Local ASGI server. Needed by `python -m api`, not by Vercel, which brings
-# its own runtime.
+# Local ASGI server, needed by `python -m api`.
 uvicorn[standard]>=0.27

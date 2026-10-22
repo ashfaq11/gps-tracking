@@ -1,11 +1,12 @@
 import logging
-import logging.handlers
 import os
 import tempfile
 import unittest
+from datetime import datetime
 
 from gps_gateway.config import Config
-from gps_gateway.logging_setup import LOG_FILE_NAME, MESSAGE_LOGGER, configure_logging
+from gps_gateway.logging_setup import MESSAGE_LOGGER, configure_logging
+from weekly_logs import IST, WeeklyFileHandler, week_file, week_start, write_level
 
 
 class TestGatewayLogging(unittest.TestCase):
@@ -27,34 +28,36 @@ class TestGatewayLogging(unittest.TestCase):
         self.messages.setLevel(logging.NOTSET)
 
     def _file_handlers(self):
-        return [
-            h
-            for h in self.root.handlers
-            if isinstance(h, logging.handlers.TimedRotatingFileHandler)
-        ]
+        return [h for h in self.root.handlers if isinstance(h, WeeklyFileHandler)]
 
-    def test_defaults_keep_thirty_days(self):
+    def test_defaults_keep_four_weeks_outside_the_project(self):
         config = Config.from_env({})
-        self.assertEqual(config.log_dir, "logs")
-        self.assertEqual(config.log_retention_days, 30)
+        self.assertEqual(config.log_dir, os.path.expanduser("~/gps_gateway/logs"))
+        self.assertEqual(config.log_retention_weeks, 4)
 
-    def test_retention_is_never_below_one_day(self):
-        self.assertEqual(Config.from_env({"GATEWAY_LOG_RETENTION_DAYS": "0"}).log_retention_days, 1)
+    def test_retention_is_never_below_one_week(self):
+        self.assertEqual(Config.from_env({"GATEWAY_LOG_RETENTION_WEEKS": "0"}).log_retention_weeks, 1)
 
-    def test_writes_records_to_a_daily_rotating_file(self):
+    def test_writes_warnings_and_errors_to_the_weeks_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_dir = os.path.join(tmp, "nested", "logs")
-            configure_logging(Config(log_dir=log_dir, log_retention_days=14, log_level="INFO"))
-
+            configure_logging(Config(log_dir=log_dir, log_level="INFO"))
             (handler,) = self._file_handlers()
-            self.assertEqual(handler.backupCount, 14)
-            self.assertEqual(handler.when, "MIDNIGHT")
-
             logging.getLogger("gps_gateway.test").info("device 123 logged in")
-            handler.flush()
-            with open(os.path.join(log_dir, LOG_FILE_NAME), encoding="utf-8") as f:
-                self.assertIn("[gps_gateway.test] device 123 logged in", f.read())
-            handler.close()
+            logging.getLogger("gps_gateway.test").warning("device 123 sent junk")
+            name = week_file(week_start(datetime.now(IST)))
+            with open(os.path.join(log_dir, name), encoding="utf-8") as f:
+                text = f.read()
+            self.assertIn("[gps_gateway.test] device 123 sent junk", text)
+            self.assertNotIn("logged in", text)
+
+    def test_follows_a_level_saved_through_the_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            level = configure_logging(Config(log_dir=tmp))
+            self.assertEqual(self.root.level, logging.ERROR)
+            write_level(tmp, "WARNING")
+            self.assertTrue(level.apply())
+            self.assertEqual(self.root.level, logging.WARNING)
 
     def test_only_errors_and_no_packet_log_by_default(self):
         config = Config.from_env({})

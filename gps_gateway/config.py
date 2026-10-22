@@ -3,9 +3,11 @@
 import os
 from dataclasses import dataclass
 
+from weekly_logs import DEFAULT_RETENTION_WEEKS, retention_weeks
 
-# Log files are never kept longer than this, whatever the environment says.
-MAX_LOG_RETENTION_DAYS = 30
+# Outside the project directory: on the server, next to the checkout
+# (~/gps_gateway/logs beside ~/gps_gateway/gps-tracking).
+DEFAULT_LOG_DIR = os.path.expanduser("~/gps_gateway/logs")
 
 
 def _log_level(value: str | None, default: str) -> str:
@@ -51,11 +53,12 @@ class Config:
     # their sockets until the writer catches up: a stalled database slows
     # devices down over TCP rather than growing memory without bound.
     queue_max: int = 10_000
-    # Log file directory; empty disables file logging (console only). Files
-    # rotate daily and are deleted once older than log_retention_days, which
-    # is capped at MAX_LOG_RETENTION_DAYS.
-    log_dir: str = "logs"
-    log_retention_days: int = 30
+    # Warnings and errors go to the week's file in log_dir --
+    # <Monday>_<Sunday>.log, shared with the API, the last
+    # log_retention_weeks kept (weekly_logs.py). Empty disables file
+    # logging (console only).
+    log_dir: str = DEFAULT_LOG_DIR
+    log_retention_weeks: int = DEFAULT_RETENTION_WEEKS
     # Only errors by default; GATEWAY_LOG_LEVEL=INFO brings back connects,
     # logins and the like.
     log_level: str = "ERROR"
@@ -93,10 +96,7 @@ class Config:
             queue_max=int(env.get("GATEWAY_QUEUE_MAX", cls.queue_max)),
             log_dir=env.get("GATEWAY_LOG_DIR", cls.log_dir),
             log_level=_log_level(env.get("GATEWAY_LOG_LEVEL"), cls.log_level),
-            log_retention_days=min(
-                MAX_LOG_RETENTION_DAYS,
-                max(1, int(env.get("GATEWAY_LOG_RETENTION_DAYS", cls.log_retention_days))),
-            ),
+            log_retention_weeks=retention_weeks(env.get("GATEWAY_LOG_RETENTION_WEEKS")),
             message_log=_flag(env.get("GATEWAY_MESSAGE_LOG"), cls.message_log),
             message_log_raw=_flag(env.get("GATEWAY_MESSAGE_LOG_RAW"), cls.message_log_raw),
             command_reply_timeout_s=float(

@@ -24,7 +24,7 @@ from .errors import register_error_handlers
 from .middleware import RequestLoggingMiddleware
 from .live import run_fix_listener
 from .push import run_geofence_listener, run_motion_listener
-from .routers import devices, geofences, health, ingest, live, push, shop, stats, trackers, users
+from .routers import devices, geofences, health, ingest, live, logs, push, shop, stats, trackers, users
 from .state import close_repository, ensure_repository, init_state
 
 log = logging.getLogger(__name__)
@@ -142,8 +142,8 @@ def log_startup_urls(app: FastAPI, config: ApiConfig) -> None:
 async def lifespan(app: FastAPI):
     """
     Connect eagerly where the platform runs lifespan, so a bad DSN fails at
-    boot instead of on the first request. Serverless hosts that skip lifespan
-    (Vercel among them) fall back to lazy creation in `ensure_repository`.
+    boot instead of on the first request. A host that skips lifespan still
+    works: `ensure_repository` creates it lazily on the first request.
     """
     config: ApiConfig = app.state.config
     try:
@@ -154,8 +154,8 @@ async def lifespan(app: FastAPI):
 
     # Both listeners need a real, persistent Postgres connection of their
     # own -- pointless with the in-memory backend, and only running where
-    # lifespan actually executes (never on Vercel; see push.py's and
-    # live.py's module docstrings for why).
+    # lifespan actually executes (see push.py's and live.py's module
+    # docstrings for why).
     listener_tasks: list[asyncio.Task] = []
     if config.backend != "memory" and app.state.users is not None:
         listener_tasks.append(
@@ -238,6 +238,7 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     app.include_router(geofences.router, prefix=API_PREFIX)
     app.include_router(trackers.router, prefix=API_PREFIX)
     app.include_router(shop.router, prefix=API_PREFIX)
+    app.include_router(logs.router, prefix=API_PREFIX)
     return app
 
 

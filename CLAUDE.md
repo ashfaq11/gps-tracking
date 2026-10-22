@@ -173,9 +173,9 @@ Postgres `LISTEN`/`NOTIFY`.** `api/push.py: run_motion_listener` holds one
 dedicated connection (separate from the request pool — `LISTEN` state lives
 on the connection) and turns each `vehicle_motion` notification into pushes
 via `pywebpush`, scoped to exactly the subscriptions that can see that
-device. Started from `api/main.py`'s `lifespan`, so **it never runs on
-Vercel** (serverless skips lifespan and is short-lived) — subscribing and
-unsubscribing still work anywhere, only delivery needs a long-running host.
+device. Started from `api/main.py`'s `lifespan`, so it needs a long-running
+process (`python -m api`, as deploy/aws runs it) — subscribing and
+unsubscribing are ordinary requests and work anywhere.
 `python -m api.push genkey` mints the `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`
 pair `api/config.py` reads.
 
@@ -195,14 +195,11 @@ newer command supersedes a queued one. The API checks ignition too, to refuse
 early; the session re-checks its own latest heartbeat. The table is the audit
 log -- never delete from it.
 
-**Serverless-safe startup.** Vercel does not reliably run ASGI lifespan
-events, so the connection pool is built lazily on first request
-(`api/state.py`), not in a startup hook — otherwise every request would 503
-on a platform that skips lifespan. `tests/test_serverless.py` exercises this
-directly. `vercel_entry.py` sits at the repo root, not inside `api/`,
-because Vercel turns every file under a top-level `api/` directory into its
-own function — putting the entry point inside would publish `config.py` and
-`repository.py` as endpoints.
+**Lifespan-independent startup.** The connection pool is built lazily on
+first request (`api/state.py`) as well as eagerly in `lifespan`, so a host
+that skips lifespan events does not answer 503 to everything.
+`tests/test_serverless.py` exercises this directly. (The API used to deploy
+to Vercel; that configuration is gone -- production is deploy/aws.)
 
 **Structured logging with request correlation.** Every request gets an id
 (`api/middleware.py`) that appears in the response's `X-Request-ID` header,
@@ -211,9 +208,25 @@ application-code logs, via a formatter installed in `python -m api`'s
 startup. Log levels are tuned so the stream stays readable: `/health` is
 DEBUG (load balancers poll constantly), 4xx is WARNING, 5xx is ERROR with a
 traceback, but the client only ever sees `{"detail": ..., "request_id": ...}`
-— internal detail never reaches the response. Both processes default to
-`ERROR` (`API_LOG_LEVEL` / `GATEWAY_LOG_LEVEL` lower it), and the gateway's
-per-packet message log is off unless `GATEWAY_MESSAGE_LOG=on`.
+— internal detail never reaches the response.
+
+**Log files: one per week, outside the project, warnings and errors only.**
+`weekly_logs.py` (repo root, copied into both images) is the one place that
+knows the layout: `<log_dir>/19102026_25102026.log` (Monday_Sunday, ddmmyyyy,
+IST), shared by the API and the gateway -- each record is a single
+`O_APPEND` write, so their lines never interleave. `log_dir` defaults to
+`~/gps_gateway/logs`, beside the server's checkout (deploy/aws binds it into
+both containers at `/var/log/gps-tracking`). The last 4 weeks are kept
+(`*_LOG_RETENTION_WEEKS`), pruned at start and at each new week. The level is
+ERROR; `PUT /logs/level` (admin, `api/routers/logs.py`) writes
+`<log_dir>/log-level`, applied by the API at once and by the gateway within
+30 s (`LevelWatcher`), and it outlasts restarts -- the env defaults
+(`API_LOG_LEVEL` / `GATEWAY_LOG_LEVEL`) only apply until it is set. The file
+handler never takes anything below WARNING. `GET /logs` and
+`GET /logs/{name}` read the files; names are validated against the week
+pattern, so a request can never reach outside `log_dir`. The gateway's
+per-packet log is off unless `GATEWAY_MESSAGE_LOG=on` (then
+`<week>.packets.log`).
 
 **Schema is one hand-applied, idempotent file — no migration tool.**
 `sql/schema.sql` uses `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT

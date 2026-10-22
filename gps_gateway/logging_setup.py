@@ -1,88 +1,80 @@
-"""Gateway logging: console, plus daily-rotated files kept for a fixed window.
+"""Gateway logging: console, plus the weekly file it shares with the API.
 
-Two files in `log_dir`:
-- gateway.log           everything the gateway logs (connections, errors, ...)
-- gateway-messages.log  one human-readable line per packet received from a
-                        tracker, and per command sent to one (message_log.py)
+In `log_dir` (outside the project; see weekly_logs.py):
+- 19102026_25102026.log          the week's warnings and errors, the API's too
+- 19102026_25102026.packets.log  one human-readable line per packet received
+                                 from a tracker, and per command sent to one
+                                 (message_log.py) -- only with
+                                 GATEWAY_MESSAGE_LOG=on
 
-Both roll over at midnight (`gateway.log.2026-09-26`) and anything older than
-`log_retention_days` (at most 30) is deleted at rollover, so the directory is
-bounded without a cron job or logrotate. File timestamps are IST, like the
-dashboard.
+One file per week, Monday to Sunday (IST), the last `log_retention_weeks`
+kept. The level -- ERROR by default -- can be changed through the API's
+PUT /logs/level without a restart: `watch_level` re-reads it.
 """
 
+import asyncio
 import logging
-import logging.handlers
 import os
-from datetime import datetime
+
+from weekly_logs import LEVEL_POLL_SECONDS, IstFormatter, LevelWatcher, WeeklyFileHandler
 
 from .config import Config
-from .message_log import IST
 
 FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
-LOG_FILE_NAME = "gateway.log"
-MESSAGE_LOG_FILE_NAME = "gateway-messages.log"
 MESSAGE_LOGGER = "gps_gateway.messages"
 
-
-class IstFormatter(logging.Formatter):
-    """Timestamps as `2026-09-30 11:25:32 IST`, whatever the server's timezone."""
-
-    def formatTime(self, record, datefmt=None):  # noqa: N802 - logging's API
-        return datetime.fromtimestamp(record.created, IST).strftime("%Y-%m-%d %H:%M:%S IST")
+log = logging.getLogger(__name__)
 
 
-def _rotating(log_dir: str, name: str, days: int, fmt: str) -> logging.Handler:
-    handler = logging.handlers.TimedRotatingFileHandler(
-        os.path.join(log_dir, name),
-        when="midnight",
-        backupCount=days,
-        encoding="utf-8",
-    )
-    handler.setFormatter(IstFormatter(fmt))
-    return handler
-
-
-def configure_logging(config: Config) -> None:
-    """Log to stderr and, unless `log_dir` is empty, to the two files above.
+def configure_logging(config: Config) -> LevelWatcher:
+    """Log to stderr and, unless `log_dir` is empty, to the week's file(s).
 
     The per-packet message log goes to its own file only -- a fleet's
     heartbeats would drown the console -- except when there is no log
     directory, when it falls back to the console so it is still visible.
     """
     logging.basicConfig(level=config.log_level, format=FORMAT)
+    level = LevelWatcher(config.log_dir, config.log_level)
     # basicConfig leaves an already-configured root alone, level included.
-    logging.getLogger().setLevel(config.log_level)
+    level.apply()
     messages = logging.getLogger(MESSAGE_LOGGER)
     messages.disabled = not config.message_log
     # Asked for explicitly, so written whatever the general level is.
     messages.setLevel(logging.INFO if config.message_log else logging.NOTSET)
     if not config.log_dir:
-        return
+        return level
 
     try:
-        os.makedirs(config.log_dir, exist_ok=True)
-        main = _rotating(config.log_dir, LOG_FILE_NAME, config.log_retention_days, FORMAT)
-        packets = _rotating(
-            config.log_dir,
-            MESSAGE_LOG_FILE_NAME,
-            config.log_retention_days,
-            "%(asctime)s %(message)s",
+        main = WeeklyFileHandler(config.log_dir, config.log_retention_weeks)
+        packets = (
+            WeeklyFileHandler(config.log_dir, config.log_retention_weeks, kind="packets")
+            if config.message_log
+            else None
         )
     except OSError as exc:
         # An unwritable log directory must not stop the gateway taking fixes.
-        logging.getLogger(__name__).warning(
-            "File logging disabled: cannot write to %r (%s)", config.log_dir, exc
-        )
-        return
+        log.warning("File logging disabled: cannot write to %r (%s)", config.log_dir, exc)
+        return level
 
+    main.setFormatter(IstFormatter(FORMAT))
     logging.getLogger().addHandler(main)
-    messages.addHandler(packets)
-    messages.propagate = False
-    logging.getLogger(__name__).info(
-        "Logging to %s (%s, %s), kept %d days",
+    if packets is not None:
+        packets.setFormatter(IstFormatter("%(asctime)s %(message)s"))
+        messages.addHandler(packets)
+        messages.propagate = False
+    log.info(
+        "Logging warnings and errors to %s, one file per week, kept %d weeks%s",
         os.path.abspath(config.log_dir),
-        LOG_FILE_NAME,
-        MESSAGE_LOG_FILE_NAME if config.message_log else "message log off",
-        config.log_retention_days,
+        config.log_retention_weeks,
+        " (packet log on)" if packets is not None else "",
     )
+    return level
+
+
+async def watch_level(level: LevelWatcher) -> None:
+    """Follows a level changed through the API, without a restart."""
+    while True:
+        await asyncio.sleep(LEVEL_POLL_SECONDS)
+        if level.apply():
+            # WARNING so the change itself is on record whenever it lets warnings in.
+            log.warning("Log level is now %s", level.current)

@@ -14,7 +14,9 @@ from .commands import (
     reply_is_failure,
 )
 from .config import Config
-from .logging_setup import configure_logging
+from weekly_logs import LevelWatcher
+
+from .logging_setup import configure_logging, watch_level
 from .message_log import log_event, log_inbound
 from .models import LocationEvent, StatusEvent
 from .protocol import (
@@ -428,10 +430,18 @@ async def serve(
         await sink.stop()
 
 
+async def _serve_watching_level(config: Config, level: LevelWatcher) -> None:
+    watcher = asyncio.create_task(watch_level(level))
+    try:
+        await serve(config)
+    finally:
+        watcher.cancel()
+
+
 def main() -> None:
     config = Config.from_env()
-    configure_logging(config)
+    level = configure_logging(config)
     try:
-        asyncio.run(serve(config))
+        asyncio.run(_serve_watching_level(config, level))
     except KeyboardInterrupt:
         log.info("Shutting down")

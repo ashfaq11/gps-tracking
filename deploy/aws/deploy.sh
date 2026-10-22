@@ -29,6 +29,9 @@ grep -q '^PG_DSN=' "$ENV_FILE" || die "$ENV_FILE has no PG_DSN"
 command -v docker >/dev/null || die "docker is not installed"
 
 export GPS_ENV_FILE="$ENV_FILE"
+# Log files go outside the project: the folder beside the checkout
+# (~/gps_gateway/logs next to ~/gps_gateway/gps-tracking), one file per week.
+export GPS_LOG_DIR="${GPS_LOG_DIR:-$(dirname "$REPO_DIR")/logs}"
 # A docker-compose.override.yml next to the compose file, if present, is
 # layered on top: server-specific tweaks (ports, limits) without editing a
 # tracked file that the next pull would overwrite. It is gitignored.
@@ -53,6 +56,13 @@ compose build api gateway
 
 step "Applying sql/schema.sql"
 compose run --rm migrate
+
+step "Log folder: $GPS_LOG_DIR"
+mkdir -p "$GPS_LOG_DIR"
+# Both containers run as uid 10001; the folder must be theirs to write.
+if [[ "$(stat -c %u "$GPS_LOG_DIR")" != 10001 ]]; then
+  sudo chown 10001:10001 "$GPS_LOG_DIR" 2>/dev/null || chmod 1777 "$GPS_LOG_DIR"
+fi
 
 step "Starting containers"
 compose up -d --remove-orphans api gateway

@@ -2,10 +2,9 @@
 Repository lifecycle.
 
 Kept out of main.py so the dependency layer can reach it without importing
-the app module, and lazy so the API works on platforms that never run ASGI
-lifespan events. Vercel's Python runtime is one of those: a startup hook is
-not guaranteed to fire, and a repository built only in `lifespan` would leave
-every request answering 503.
+the app module, and lazy so the API also works on a host that never runs
+ASGI lifespan events: a repository built only in `lifespan` would leave every
+request there answering 503.
 """
 
 import asyncio

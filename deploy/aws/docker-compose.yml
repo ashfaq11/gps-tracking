@@ -13,12 +13,13 @@ x-common: &common
   # host.docker.internal -- inside a container, localhost is the container.
   extra_hosts:
     - "host.docker.internal:host-gateway"
-  # api.log, gateway.log and gateway-messages.log (one readable line per
-  # tracker packet), rotated daily and kept 30 days by the apps themselves.
-  # A named volume survives redeploys; read them with, e.g.
-  #   docker compose ... exec gateway tail -f logs/gateway-messages.log
+  # Log files live outside the project, in the folder next to the checkout
+  # (~/gps_gateway/logs beside ~/gps_gateway/gps-tracking; GPS_LOG_DIR to
+  # move it): one file per week, 19102026_25102026.log, with both services'
+  # warnings and errors -- see weekly_logs.py. deploy.sh creates the folder.
+  #   tail -f ~/gps_gateway/logs/$(ls -t ~/gps_gateway/logs | head -1)
   volumes:
-    - gps-logs:/app/logs
+    - ${GPS_LOG_DIR:-../../../logs}:/var/log/gps-tracking
   logging:
     driver: json-file
     options:
@@ -70,6 +71,3 @@ services:
     # interpolated here, so the password never shows in `docker inspect`
     # args or the process list.
     entrypoint: ["sh", "-c", 'psql "$$PG_DSN" -v ON_ERROR_STOP=1 -q -f /sql/schema.sql']
-
-volumes:
-  gps-logs:

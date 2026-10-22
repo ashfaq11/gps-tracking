@@ -1,6 +1,6 @@
 """Request and response bodies."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -1254,3 +1254,35 @@ class OrderOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     events: list[OrderEventOut] = Field(default_factory=list, description="Oldest first.")
+
+
+# --- server logs (admin) ------------------------------------------------------
+
+LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+
+class LogFileOut(BaseModel):
+    """One week's log file, shared by the API and the gateway (weekly_logs.py)."""
+
+    name: str = Field(description="`19102026_25102026.log`: the week's Monday and Sunday, ddmmyyyy.")
+    week_start: date = Field(description="The Monday (IST).")
+    week_end: date = Field(description="The Sunday (IST).")
+    packets: bool = Field(
+        description="The gateway's per-packet log (GATEWAY_MESSAGE_LOG=on), not warnings/errors."
+    )
+    size_bytes: int
+    modified_at: datetime
+
+
+class LogLevelIn(BaseModel):
+    level: LogLevel = Field(
+        description="ERROR: only errors reach the files. WARNING: warnings too. INFO/DEBUG only "
+        "add console output -- the files never hold more than warnings."
+    )
+
+
+class LogLevelOut(LogLevelIn):
+    saved: bool = Field(
+        description="Kept in the log folder, so it outlasts a restart and the gateway follows "
+        "it within 30 s. False when the server writes no log files."
+    )

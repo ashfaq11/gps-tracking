@@ -12,7 +12,5 @@ tools/
 postman/
 *.md
 openapi.json
-vercel.json
-.vercelignore
 logs/
 .ruff_cache/

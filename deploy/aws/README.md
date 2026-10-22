@@ -136,29 +136,31 @@ docker compose -f deploy/aws/docker-compose.yml --env-file /etc/gps-tracking.env
 docker compose -f deploy/aws/docker-compose.yml --env-file /etc/gps-tracking.env logs -f api
 ```
 
-**Log files** (IST timestamps, rotated at midnight, kept 30 days -- older
-files are deleted automatically) live in the `gps-logs` volume, mounted at
-`/app/logs` in both containers:
-
-| File | What |
-|---|---|
-| `gateway-messages.log` | every packet a tracker sent, one readable line each: login, location (with a map link), heartbeat (ignition, battery, GSM), alarm, command replies -- plus commands sent and refused logins |
-| `gateway.log` | the gateway's own log: connections, warnings, errors |
-| `api.log` | the API's log, each line tagged with its request id |
+**Log files** are outside the project, in `~/gps_gateway/logs` (the folder
+next to the checkout; `GPS_LOG_DIR` in deploy.sh's environment moves it),
+which deploy.sh creates and binds into both containers. One file per week,
+Monday to Sunday (IST), named by those dates (ddmmyyyy), with the API's and
+the gateway's **warnings and errors** -- the last 4 weeks are kept:
 
 ```bash
-C="docker compose -f deploy/aws/docker-compose.yml --env-file /etc/gps-tracking.env"
-$C exec gateway tail -f logs/gateway-messages.log              # live
-$C exec gateway grep 868720065896205 logs/gateway-messages.log  # one tracker, today
-$C exec gateway ls logs                                         # older days: *.log.YYYY-MM-DD
-$C exec api tail -f logs/api.log
+ls ~/gps_gateway/logs                      # 19102026_25102026.log, log-level
+tail -f ~/gps_gateway/logs/19102026_25102026.log
 ```
 
-Both services log errors only by default. To investigate, set
-`API_LOG_LEVEL=INFO` / `GATEWAY_LOG_LEVEL=INFO` in the env file, and
-`GATEWAY_MESSAGE_LOG=on` for the per-packet `gateway-messages.log`
-(`GATEWAY_MESSAGE_LOG_RAW=1` adds each packet's raw hex, when a new tracker
-model needs checking byte by byte), then redeploy.
+or over HTTP as an admin: `GET /api/v1/logs`, then
+`GET /api/v1/logs/19102026_25102026.log?tail=500&level=ERROR`.
+
+The level is **ERROR**. To let warnings in too, without a restart:
+
+```bash
+curl -X PUT https://<api>/api/v1/logs/level -H "Authorization: Bearer <admin token>" \
+     -H 'Content-Type: application/json' -d '{"level": "WARNING"}'
+```
+
+(`{"level": "ERROR"}` goes back.) It is kept across restarts and deploys.
+To debug one tracker packet by packet, set `GATEWAY_MESSAGE_LOG=on` in the
+env file and redeploy: the week's `*.packets.log` gets one readable line per
+packet (`GATEWAY_MESSAGE_LOG_RAW=1` adds the raw hex).
 
 **Roll back:** check out an earlier commit and deploy it as it is.
 
