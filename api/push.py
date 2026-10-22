@@ -175,6 +175,11 @@ async def _dispatch_geofence(event: dict, users: UserRepository, config: ApiConf
         event.get("kind"),
         event.get("geofence_id"),
     )
+    # Geofence alerts stop with the feature: an account whose geofences an
+    # admin switched off keeps its geofences, but hears nothing from them.
+    owner = await users.get_user(int(owner_id))
+    if owner is None or not (owner.role == "admin" or owner.geofence_enabled):
+        return
     subscriptions = await users.subscriptions_for_device(device_id, user_id=int(owner_id))
     payload = geofence_message(event)
     for sub in subscriptions:

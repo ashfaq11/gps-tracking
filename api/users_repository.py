@@ -17,7 +17,8 @@ from .schemas import Role, UserCreate, UserOut, UserUpdate
 from .security import hash_password, token_fingerprint, verify_password
 
 _COLUMNS = (
-    "id, username, full_name, email, mobile, role, is_active, created_at, last_login_at"
+    "id, username, full_name, email, mobile, role, is_active, geofence_enabled, created_at, "
+    "last_login_at"
 )
 
 
@@ -57,10 +58,16 @@ class AuthenticatedUser:
     role: Role
     is_active: bool
     devices: list[str] = field(default_factory=list)
+    geofence_enabled: bool = False
 
     @property
     def is_admin(self) -> bool:
         return self.role == "admin"
+
+    @property
+    def can_use_geofences(self) -> bool:
+        """Geofences are switched on per account by an admin; admins always have them."""
+        return self.is_admin or self.geofence_enabled
 
 
 class UserRepository(Protocol):
@@ -159,6 +166,7 @@ class InMemoryUserRepository:
             mobile=row.get("mobile"),
             role=row["role"],
             is_active=row["is_active"],
+            geofence_enabled=row.get("geofence_enabled", False),
             devices=list(self._devices.get(row["id"], [])),
             created_at=row["created_at"],
             last_login_at=row["last_login_at"],
@@ -251,6 +259,7 @@ class InMemoryUserRepository:
             "mobile": payload.mobile,
             "role": payload.role,
             "is_active": True,
+            "geofence_enabled": payload.geofence_enabled,
             "created_at": _now(),
             "last_login_at": None,
         }
@@ -281,6 +290,8 @@ class InMemoryUserRepository:
             row["is_active"] = payload.is_active
             if not payload.is_active:
                 self._drop_sessions(user_id)
+        if payload.geofence_enabled is not None:
+            row["geofence_enabled"] = payload.geofence_enabled
         if payload.devices is not None and row["role"] != "admin":
             self._devices[user_id] = list(payload.devices)
             self._auto_claim_unowned(user_id, payload.devices)
@@ -330,6 +341,7 @@ class InMemoryUserRepository:
             role=row["role"],
             is_active=row["is_active"],
             devices=list(self._devices.get(row["id"], [])),
+            geofence_enabled=row.get("geofence_enabled", False),
         )
 
     async def end_session(self, token: str) -> None:
@@ -496,8 +508,9 @@ class PostgresUserRepository:
             async with conn.transaction():
                 row = await conn.fetchrow(
                     f"""
-                    INSERT INTO users (username, password_hash, full_name, email, mobile, role)
-                    VALUES ($1, $2, $3, $4, $5, $6)
+                    INSERT INTO users
+                        (username, password_hash, full_name, email, mobile, role, geofence_enabled)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
                     RETURNING {_COLUMNS}
                     """,
                     payload.username.lower(),
@@ -506,6 +519,7 @@ class PostgresUserRepository:
                     payload.email,
                     payload.mobile,
                     payload.role,
+                    payload.geofence_enabled,
                 )
                 await self._replace_devices(conn, row["id"], devices)
             return await self._out(conn, row)
@@ -527,6 +541,7 @@ class PostgresUserRepository:
                         password_hash = COALESCE($5, password_hash),
                         email         = COALESCE($6, email),
                         mobile        = COALESCE($7, mobile),
+                        geofence_enabled = COALESCE($8, geofence_enabled),
                         updated_at    = now()
                     WHERE id = $1
                     RETURNING {_COLUMNS}
@@ -538,6 +553,7 @@ class PostgresUserRepository:
                     hash_password(payload.password) if payload.password else None,
                     payload.email,
                     payload.mobile,
+                    payload.geofence_enabled,
                 )
 
                 if role == "admin":
@@ -614,7 +630,7 @@ class PostgresUserRepository:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT u.id, u.username, u.role, u.is_active
+                SELECT u.id, u.username, u.role, u.is_active, u.geofence_enabled
                 FROM user_sessions s
                 JOIN users u ON u.id = s.user_id
                 WHERE s.token_hash = $1 AND s.expires_at > now()
@@ -632,6 +648,7 @@ class PostgresUserRepository:
                 role=row["role"],
                 is_active=row["is_active"],
                 devices=await self._devices_for(conn, row["id"]),
+                geofence_enabled=row["geofence_enabled"],
             )
 
     async def end_session(self, token: str) -> None:

@@ -160,6 +160,14 @@ scoped account gets the exact same response for "not yours" as for "does not
 exist" (404, not 403) — the caller must not be able to distinguish the two.
 When adding a new device-scoped endpoint, follow this shape, not a 403.
 
+**Geofences are a per-account feature an admin switches on.**
+`users.geofence_enabled` (off by default; an admin always has it) gates
+every `/geofences` endpoint -- drawing, events, the report -- through
+`deps.require_geofences`, which answers 403 (the feature is withheld, not a
+device, so not the scoping 404). `push.py` drops a geofence alert whose
+owner has it switched off. The web dashboard and app hide Geofences and the
+geofence report unless `/auth/me` says the account may use them.
+
 **Web Push runs as a background task inside the API process, driven by
 Postgres `LISTEN`/`NOTIFY`.** `api/push.py: run_motion_listener` holds one
 dedicated connection (separate from the request pool — `LISTEN` state lives

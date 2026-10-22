@@ -60,10 +60,17 @@ class GeofenceTestCase(unittest.IsolatedAsyncioTestCase):
     def auth(token):
         return {"Authorization": f"Bearer {token}"}
 
-    async def user_token(self, username: str, devices: list[str]) -> str:
+    async def user_token(self, username: str, devices: list[str], geofences: bool = True) -> str:
+        """A non-admin account; `geofences` is the admin's per-account switch."""
         await self.client.post(
             f"{BASE}/users",
-            json={"username": username, "password": "Password-123", "role": "user", "devices": devices},
+            json={
+                "username": username,
+                "password": "Password-123",
+                "role": "user",
+                "devices": devices,
+                "geofence_enabled": geofences,
+            },
             headers=self.auth(self.admin),
         )
         response = await self.client.post(
@@ -245,3 +252,64 @@ class TestAlertMessage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
+class TestFeatureSwitch(GeofenceTestCase):
+    """Geofences are an admin's per-account switch, off unless turned on."""
+
+    async def test_an_account_without_the_feature_is_refused_everything(self):
+        token = await self.user_token("plain", ["dev-a"], geofences=False)
+        for response in (
+            await self.client.get(f"{BASE}/geofences", headers=self.auth(token)),
+            await self.create(CIRCLE, token),
+            await self.client.get(f"{BASE}/geofences/events", headers=self.auth(token)),
+            await self.client.get(f"{BASE}/geofences/report", headers=self.auth(token)),
+        ):
+            self.assertEqual(response.status_code, 403)
+            self.assertIn("not enabled", response.json()["detail"])
+
+    async def test_an_admin_switching_it_on_lets_the_account_in(self):
+        token = await self.user_token("later", ["dev-a"], geofences=False)
+        users = (await self.client.get(f"{BASE}/users", headers=self.auth(self.admin))).json()
+        user = next(u for u in users if u["username"] == "later")
+        self.assertFalse(user["geofence_enabled"])
+
+        response = await self.client.patch(
+            f"{BASE}/users/{user['id']}", json={"geofence_enabled": True}, headers=self.auth(self.admin)
+        )
+        self.assertTrue(response.json()["geofence_enabled"])
+        # The same session: the switch is read on every request.
+        self.assertEqual((await self.create(CIRCLE, token)).status_code, 201)
+        me = await self.client.get(f"{BASE}/auth/me", headers=self.auth(token))
+        self.assertTrue(me.json()["geofence_enabled"])
+
+    async def test_an_admin_always_has_it(self):
+        self.assertEqual((await self.create(CIRCLE)).status_code, 201)
+
+
+@unittest.skipUnless(FASTAPI_AVAILABLE, "fastapi is not installed")
+class TestAlertGate(unittest.IsolatedAsyncioTestCase):
+    async def test_a_geofence_alert_goes_only_to_an_owner_with_the_feature(self):
+        from unittest.mock import patch
+
+        from api.push import _dispatch_geofence
+        from api.schemas import UserCreate
+        from api.users_repository import InMemoryUserRepository
+
+        users = InMemoryUserRepository()
+        owners = [
+            await users.create_user(
+                UserCreate(username=name, password="Password-123", devices=["dev-a"], geofence_enabled=on)
+            )
+            for name, on in (("owner-off", False), ("owner-on", True))
+        ]
+        for owner in owners:
+            await users.add_subscription(owner.id, f"https://push.example/{owner.username}", "k", "a")
+
+        sent = []
+        with patch("api.push.send_push", lambda endpoint, *rest: sent.append(endpoint)):
+            for owner in owners:
+                event = {"id": 1, "device_id": "dev-a", "owner_id": owner.id, "kind": "enter"}
+                await _dispatch_geofence(event, users, ApiConfig(backend="memory"))
+        self.assertEqual(sent, ["https://push.example/owner-on"])
