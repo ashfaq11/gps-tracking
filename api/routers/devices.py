@@ -9,6 +9,7 @@ from ..commands_repository import (
     CommandRepository,
     timer_command,
 )
+from ..timeutil import as_utc
 from ..deps import (
     current_user,
     get_commands,
@@ -225,6 +226,7 @@ async def location_history(
     device with a lapsed subscription also returns `[]`, for everyone,
     admins included, until it is renewed.
     """
+    since, until = as_utc(since), as_utc(until)
     if since is not None and until is not None and until < since:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

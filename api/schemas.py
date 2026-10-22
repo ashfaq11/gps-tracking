@@ -3,9 +3,14 @@
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator
 
 from .security import MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH, password_problem
+from .timeutil import as_utc
+
+# Every timestamp in and out is UTC (timeutil.py): a naive one is taken as
+# UTC, any other offset converted, so the JSON always reads "...Z".
+UtcDatetime = Annotated[datetime, AfterValidator(as_utc)]
 
 
 class LocationIn(BaseModel):
@@ -56,7 +61,7 @@ class LocationIn(BaseModel):
             "not from GPS at all, and it is then left off routes and reports."
         ),
     )
-    fixed_at: datetime | None = Field(
+    fixed_at: UtcDatetime | None = Field(
         default=None,
         description="When the device took the fix. Null if its clock was unset; "
         "fall back to received_at.",
@@ -111,8 +116,8 @@ class LocationOut(BaseModel):
     course_deg: int | None = None
     gps_fixed: bool | None = None
     satellites: int | None = None
-    fixed_at: datetime | None = None
-    received_at: datetime
+    fixed_at: UtcDatetime | None = None
+    received_at: UtcDatetime
     mcc: int | None = None
     mnc: int | None = None
     lac: int | None = None
@@ -155,14 +160,14 @@ class DeviceOut(BaseModel):
     }
 
     device_id: str
-    last_seen: datetime | None = Field(
+    last_seen: UtcDatetime | None = Field(
         default=None,
         description="received_at of this device's most recent fix. Null for a device that "
         "has been named or claimed but has never actually reported a position -- see "
         "fix_count, which is 0 in that case.",
     )
     fix_count: int = Field(description="Total rows stored for this device.")
-    subscription_end_date: datetime | None = Field(
+    subscription_end_date: UtcDatetime | None = Field(
         default=None,
         description="When this device's tracking access ends. Null if it was never "
         "put on a metered subscription -- unmetered devices never expire.",
@@ -173,10 +178,10 @@ class DeviceOut(BaseModel):
         "location and history are then hidden from every viewer, admins "
         "included, until it is renewed.",
     )
-    installed_at: datetime | None = Field(
+    installed_at: UtcDatetime | None = Field(
         default=None, description="When the tracker was fitted and put into service. Informational."
     )
-    sim_expiry_date: datetime | None = Field(
+    sim_expiry_date: UtcDatetime | None = Field(
         default=None,
         description="When the tracker's cellular SIM / data plan runs out. Informational -- "
         "unlike subscription_end_date this never hides the device.",
@@ -189,7 +194,7 @@ class DeviceOut(BaseModel):
     icon: VehicleIcon = Field(
         default=DEFAULT_VEHICLE_ICON, description="Which vehicle shape this device draws on the map."
     )
-    halted_since: datetime | None = Field(
+    halted_since: UtcDatetime | None = Field(
         default=None,
         description="When this device was last seen moving (speed_kmh > 0), or its very first "
         "fix if it has never moved -- by fix time (fixed_at, never later than received_at). Meaningful only when the latest fix reads 0 km/h -- a "
@@ -207,7 +212,7 @@ class DeviceOut(BaseModel):
         description="Current ignition (ACC) state -- from the tracker's latest heartbeat or "
         "any fix that reported it, whichever is newer. Null if it has never reported one.",
     )
-    ignition_changed_at: datetime | None = Field(
+    ignition_changed_at: UtcDatetime | None = Field(
         default=None,
         description="When ignition last switched on or off, e.g. to show 'parked since'.",
     )
@@ -260,16 +265,16 @@ class DeviceSubscriptionOut(BaseModel):
     }
 
     device_id: str
-    subscription_end_date: datetime | None = Field(
+    subscription_end_date: UtcDatetime | None = Field(
         default=None, description="Null means unmetered -- this device never expires."
     )
     subscription_status: SubscriptionStatus = Field(
         description="'expired' once subscription_end_date has passed."
     )
-    installed_at: datetime | None = Field(
+    installed_at: UtcDatetime | None = Field(
         default=None, description="When the tracker was fitted and put into service. Informational."
     )
-    sim_expiry_date: datetime | None = Field(
+    sim_expiry_date: UtcDatetime | None = Field(
         default=None,
         description="When the tracker's cellular SIM / data plan runs out. Informational -- "
         "unlike subscription_end_date this never hides the device.",
@@ -287,20 +292,20 @@ class DeviceSubscriptionUpdate(BaseModel):
         "json_schema_extra": {"examples": [{"subscription_end_date": "2027-06-01T00:00:00Z"}]}
     }
 
-    subscription_end_date: datetime | None = Field(
+    subscription_end_date: UtcDatetime | None = Field(
         default=None,
         description="The new end date. Omit it (or send `{}`) to onboard the device on the "
         "default term -- 365 days from today -- **this always overwrites**, even when "
         "omitted; it is a renewal field, not an edit field. To lift metering entirely, "
         "delete the subscription with DELETE instead of setting a far-future date here.",
     )
-    installed_at: datetime | None = Field(
+    installed_at: UtcDatetime | None = Field(
         default=None,
         description="When the tracker was fitted and put into service. Unlike "
         "subscription_end_date, omitting this leaves the stored value untouched -- "
         "there is no sensible default to fall back to.",
     )
-    sim_expiry_date: datetime | None = Field(
+    sim_expiry_date: UtcDatetime | None = Field(
         default=None,
         description="When the tracker's cellular SIM / data plan runs out. Omitting this "
         "also leaves the stored value untouched, same as installed_at.",
@@ -328,17 +333,17 @@ class DeviceSubscriptionHistoryOut(BaseModel):
 
     id: int
     device_id: str
-    previous_end_date: datetime | None = Field(
+    previous_end_date: UtcDatetime | None = Field(
         default=None, description="What the end date was before this change. Null if unmetered."
     )
-    new_end_date: datetime | None = Field(
+    new_end_date: UtcDatetime | None = Field(
         default=None, description="What the end date became. Null if cleared back to unmetered."
     )
     changed_by: int | None = Field(
         default=None, description="Id of the admin who made the change, if that account still exists."
     )
     changed_by_username: str | None = None
-    changed_at: datetime
+    changed_at: UtcDatetime
 
 
 class IngestAccepted(BaseModel):
@@ -361,13 +366,13 @@ class StatsSummary(BaseModel):
     fixes_total: int
     fixes_recent: int = Field(description="Fixes received within the reporting window.")
     recent_window_hours: int
-    last_fix_at: datetime | None = None
+    last_fix_at: UtcDatetime | None = None
 
 
 class FixBucket(BaseModel):
     """One point on the fixes-over-time chart."""
 
-    bucket: datetime
+    bucket: UtcDatetime
     fixes: int
 
 
@@ -400,8 +405,8 @@ class DeviceReport(BaseModel):
         "while moving, or reappearing somewhere else.",
     )
     fix_count: int
-    first_fix_at: datetime | None = None
-    last_fix_at: datetime | None = None
+    first_fix_at: UtcDatetime | None = None
+    last_fix_at: UtcDatetime | None = None
 
 
 class ReportTotals(BaseModel):
@@ -418,8 +423,8 @@ class ReportTotals(BaseModel):
 
 
 class TripReport(BaseModel):
-    since: datetime
-    until: datetime
+    since: UtcDatetime
+    until: UtcDatetime
     halt_threshold_minutes: int
     totals: ReportTotals
     devices: list[DeviceReport] = Field(description="Vehicles that reported, longest distance first.")
@@ -429,7 +434,7 @@ class DrivingEvent(BaseModel):
     """A stretch of driving worth a second look -- see api/driving.py."""
 
     kind: Literal["overspeed", "night_drive", "long_idle", "long_halt"]
-    at: datetime = Field(description="When the stretch began.")
+    at: UtcDatetime = Field(description="When the stretch began.")
     minutes: float = Field(description="How long it lasted.")
     max_speed_kmh: int | None = Field(default=None, description="Overspeed only: the fastest reading.")
 
@@ -460,8 +465,8 @@ class DeviceDriving(BaseModel):
 
 
 class DrivingReport(BaseModel):
-    since: datetime
-    until: datetime
+    since: UtcDatetime
+    until: UtcDatetime
     speed_limit_kmh: int
     devices: list[DeviceDriving] = Field(
         description="Vehicles that reported; lowest score first, unscored ones last."
@@ -543,8 +548,8 @@ class UserOut(BaseModel):
         default_factory=list,
         description="Devices this account may see. Empty for an admin, which sees all of them.",
     )
-    created_at: datetime
-    last_login_at: datetime | None = None
+    created_at: UtcDatetime
+    last_login_at: UtcDatetime | None = None
 
 
 class UserCreate(BaseModel):
@@ -728,7 +733,7 @@ class LoginResponse(BaseModel):
     """The token to send back as `Authorization: Bearer <token>`."""
 
     token: str
-    expires_at: datetime
+    expires_at: UtcDatetime
     user: UserOut
 
 
@@ -815,7 +820,7 @@ class DeviceLocationBySecretCode(BaseModel):
     course_deg: int | None = None
     gps_fixed: bool | None = None
     satellites: int | None = None
-    received_at: datetime = Field(description="When the latest position was received.")
+    received_at: UtcDatetime = Field(description="When the latest position was received.")
 
 
 # --- geofences ----------------------------------------------------------------
@@ -902,8 +907,8 @@ class GeofenceOut(BaseModel):
     alert_on_enter: bool
     owner_id: int
     owner_username: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
 
 class GeofenceEventOut(BaseModel):
@@ -916,7 +921,7 @@ class GeofenceEventOut(BaseModel):
     kind: GeofenceEventKind
     latitude: float
     longitude: float
-    occurred_at: datetime = Field(description="When the vehicle crossed.")
+    occurred_at: UtcDatetime = Field(description="When the vehicle crossed.")
     alerted: bool = Field(
         description="Whether the geofence's settings made this crossing send an alert."
     )
@@ -930,7 +935,7 @@ class GeofenceReportVehicle(BaseModel):
     time_outside_minutes: float = Field(
         default=0.0, description="The rest of the window: inside + outside = the window."
     )
-    last_event_at: datetime | None = None
+    last_event_at: UtcDatetime | None = None
 
 
 class GeofenceReportRow(BaseModel):
@@ -950,7 +955,7 @@ class GeofenceReportRow(BaseModel):
         default=0.0,
         description="Summed across the same vehicles: each one's inside + outside = the window.",
     )
-    last_event_at: datetime | None = None
+    last_event_at: UtcDatetime | None = None
     vehicles: list[GeofenceReportVehicle] = Field(description="Most crossings first.")
 
 
@@ -978,8 +983,8 @@ class GeofenceReportTotals(BaseModel):
 
 
 class GeofenceReport(BaseModel):
-    since: datetime
-    until: datetime
+    since: UtcDatetime
+    until: UtcDatetime
     totals: GeofenceReportTotals
     geofences: list[GeofenceReportRow] = Field(
         description="Every geofence this account can see, most crossings first."
@@ -1023,10 +1028,10 @@ class DeviceCommandOut(BaseModel):
         )
     )
     requested_by: str | None = Field(default=None, description="Username of who asked.")
-    requested_at: datetime
-    expires_at: datetime
-    sent_at: datetime | None = None
-    completed_at: datetime | None = None
+    requested_at: UtcDatetime
+    expires_at: UtcDatetime
+    sent_at: UtcDatetime | None = None
+    completed_at: UtcDatetime | None = None
     reply: str | None = Field(default=None, description="The tracker's answer, verbatim.")
     error: str | None = Field(
         default=None, description="Why it did not go through, e.g. `ignition_on`, `no_reply`."
@@ -1050,7 +1055,7 @@ class AllowedTrackerOut(BaseModel):
     """A tracker the gateway accepts at login."""
 
     device_id: str
-    added_at: datetime
+    added_at: UtcDatetime
     added_by: str | None = Field(default=None, description="Username of the admin who added it.")
     source: TrackerSource = Field(
         description=(
@@ -1073,7 +1078,7 @@ class TrackerSettingsIn(BaseModel):
 class TrackerSettingsOut(TrackerSettingsIn):
     """How the gateway treats a tracker nobody approved yet."""
 
-    changed_at: datetime | None = None
+    changed_at: UtcDatetime | None = None
     changed_by: str | None = Field(default=None, description="Username of who last changed it.")
 
 
@@ -1081,8 +1086,8 @@ class LoginAttemptOut(BaseModel):
     """A tracker the gateway refused because nobody approved its IMEI."""
 
     device_id: str
-    first_seen: datetime
-    last_seen: datetime
+    first_seen: UtcDatetime
+    last_seen: UtcDatetime
     attempts: int
     last_peer: str | None = Field(default=None, description="ip:port of the newest attempt.")
 
@@ -1126,7 +1131,7 @@ class RelayStateOut(BaseModel):
             "Only a cut needs it; restore is always allowed."
         )
     )
-    changed_at: datetime | None = None
+    changed_at: UtcDatetime | None = None
     changed_by: str | None = Field(default=None, description="Username of who last switched it.")
     commands: list[DeviceCommandOut] = Field(default_factory=list, description="Newest first.")
 
@@ -1173,7 +1178,7 @@ class ProductOut(BaseModel):
     description: str | None = None
     price: float
     active: bool
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class OrderCreate(BaseModel):
@@ -1227,7 +1232,7 @@ class OrderEventOut(BaseModel):
     status: OrderStatus
     note: str | None = None
     changed_by: str | None = Field(default=None, description="Username, if not the customer.")
-    changed_at: datetime
+    changed_at: UtcDatetime
 
 
 class OrderOut(BaseModel):
@@ -1251,8 +1256,8 @@ class OrderOut(BaseModel):
     tracking: str | None = None
     admin_note: str | None = Field(default=None, description="Visible to admins only.")
     device_ids: list[str] = Field(default_factory=list)
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
     events: list[OrderEventOut] = Field(default_factory=list, description="Oldest first.")
 
 
@@ -1271,7 +1276,7 @@ class LogFileOut(BaseModel):
         description="The gateway's per-packet log (GATEWAY_MESSAGE_LOG=on), not warnings/errors."
     )
     size_bytes: int
-    modified_at: datetime
+    modified_at: UtcDatetime
 
 
 class LogLevelIn(BaseModel):
@@ -1286,3 +1291,27 @@ class LogLevelOut(LogLevelIn):
         description="Kept in the log folder, so it outlasts a restart and the gateway follows "
         "it within 30 s. False when the server writes no log files."
     )
+
+
+class LogEntryOut(BaseModel):
+    """One record of a week's log file."""
+
+    line: int = Field(description="Where it starts in the file (1-based).")
+    at: UtcDatetime = Field(description="When it was logged (UTC; the file itself says IST).")
+    level: LogLevel | None = Field(description="Null for a packet-log line.")
+    source: Literal["api", "gateway", "packets"]
+    logger: str | None = None
+    request_id: str | None = Field(default=None, description="The API request it belongs to.")
+    message: str
+    details: str | None = Field(default=None, description="The lines after it: a traceback.")
+
+
+class LogPageOut(BaseModel):
+    """A page of one week file's records, newest first."""
+
+    name: str
+    page: int
+    size: int
+    total: int = Field(description="Records matching the filters, across all pages.")
+    pages: int
+    entries: list[LogEntryOut]

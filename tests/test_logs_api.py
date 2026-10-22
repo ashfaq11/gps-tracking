@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover
 
 WEEK = "19102026_25102026.log"
 CONTENT = (
-    "2026-10-22 10:00:00 IST ERROR   [api.error] [abc123] it broke\n"
+    "2026-10-22 10:00:00 IST ERROR   [api.error] [abc123abc123] it broke\n"
     "Traceback (most recent call last):\n"
     "  File \"x.py\", line 1\n"
     "2026-10-22 10:00:05 IST WARNING [gps_gateway.session] odd packet\n"
@@ -60,6 +60,31 @@ class TestLogs(ApiTestCase):
         self.assertIn("Traceback", errors.body.decode())  # the record keeps its traceback
         self.assertNotIn("odd packet", errors.body.decode())
         self.assertIn("write failed", errors.body.decode())
+
+    async def test_entries_newest_first_a_page_at_a_time_in_utc(self):
+        response = await self.client.get(f"{BASE}/logs/{WEEK}/entries?size=2", headers=self.auth())
+        self.assertEqual(response.status_code, 200, response.body)
+        page = response.json()
+        self.assertEqual((page["total"], page["pages"], page["page"]), (3, 2, 1))
+        newest, middle = page["entries"]
+        self.assertEqual(newest["message"], "write failed")
+        self.assertEqual((newest["source"], newest["logger"]), ("gateway", "gps_gateway.sink"))
+        self.assertEqual(newest["at"], "2026-10-22T04:30:09Z")  # 10:00:09 IST, sent as UTC
+        self.assertEqual(middle["level"], "WARNING")
+        second = (await self.client.get(f"{BASE}/logs/{WEEK}/entries?size=2&page=2", headers=self.auth())).json()
+        (oldest,) = second["entries"]
+        self.assertEqual((oldest["source"], oldest["request_id"]), ("api", "abc123abc123"))
+        self.assertIn("Traceback", oldest["details"])
+
+    async def test_entries_filter_by_level_and_text(self):
+        errors = (await self.client.get(f"{BASE}/logs/{WEEK}/entries?level=ERROR", headers=self.auth())).json()
+        self.assertEqual([e["message"] for e in errors["entries"]], ["write failed", "it broke"])
+        found = (await self.client.get(f"{BASE}/logs/{WEEK}/entries?q=X.PY", headers=self.auth())).json()
+        self.assertEqual([e["message"] for e in found["entries"]], ["it broke"])  # matched in its traceback
+        rid = (await self.client.get(f"{BASE}/logs/{WEEK}/entries?q=abc123abc123", headers=self.auth())).json()
+        self.assertEqual(rid["total"], 1)
+        missing = await self.client.get(f"{BASE}/logs/nope.log/entries", headers=self.auth())
+        self.assertEqual(missing.status_code, 404)
 
     async def test_nothing_outside_the_week_files_can_be_read(self):
         for name in ["log-level", "..%2F..%2Fetc%2Fpasswd", "26102026_01112026.log"]:

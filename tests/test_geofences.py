@@ -249,6 +249,13 @@ class TestAlertMessage(unittest.TestCase):
         )
         self.assertEqual(message["title"], "dev-a entered Depot")
 
+    def test_says_when_in_ist(self):
+        message = geofence_message(
+            {"id": 9, "kind": "exit", "device_id": "dev-a", "geofence_name": "Depot",
+             "occurred_at": "2026-10-22T05:12:00+00:00"}
+        )
+        self.assertEqual(message["body"], "Outside the geofence · 10:42 AM IST")
+
 
 if __name__ == "__main__":
     unittest.main()

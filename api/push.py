@@ -21,6 +21,7 @@ import json
 import logging
 import sys
 
+from .timeutil import ist_clock
 from .config import ApiConfig
 from .pglisten import listen_forever
 from .users_repository import UserRepository
@@ -113,9 +114,10 @@ async def _dispatch(event: dict, users: UserRepository, config: ApiConfig) -> No
 
     moving = bool(event.get("moving"))
     speed = event.get("speed_kmh")
+    body = f"Now travelling at {speed} km/h" if moving else "Speed has dropped to 0 km/h"
     payload = {
         "title": f"{device_id} started moving" if moving else f"{device_id} stopped",
-        "body": f"Now travelling at {speed} km/h" if moving else "Speed has dropped to 0 km/h",
+        "body": _with_time(body, event.get("received_at")),
         "device_id": device_id,
     }
 
@@ -128,6 +130,13 @@ async def _dispatch(event: dict, users: UserRepository, config: ApiConfig) -> No
             await users.remove_subscription(sub.endpoint)
         except Exception:
             log.exception("Unexpected error sending push to a subscription")
+
+
+def _with_time(body: str, at) -> str:
+    """The body with when it happened, in IST -- a push can arrive late, and the
+    apps show every time in IST (stored and sent as UTC)."""
+    clock = ist_clock(at)
+    return f"{body} · {clock}" if clock else body
 
 
 _GEOFENCE_CHANNEL = "geofence_event"
@@ -153,7 +162,7 @@ def geofence_message(event: dict) -> dict:
     left = event.get("kind") == "exit"
     return {
         "title": f"{vehicle} left {fence}" if left else f"{vehicle} entered {fence}",
-        "body": "Outside the geofence" if left else "Inside the geofence",
+        "body": _with_time("Outside the geofence" if left else "Inside the geofence", event.get("occurred_at")),
         "device_id": event.get("device_id"),
         "geofence_id": event.get("geofence_id"),
         "tag": f"geofence-{event.get('id')}",

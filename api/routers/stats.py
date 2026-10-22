@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from ..timeutil import as_utc
 from ..deps import current_user, get_repository
 from ..repository import LocationRepository
 from ..driving import DEFAULT_SPEED_LIMIT_KMH, MAX_DRIVING_WINDOW
@@ -103,8 +104,8 @@ async def trip_report(
     api/reports.py. Scoped like `/summary`: an admin gets every vehicle,
     anyone else only their own; lapsed subscriptions are left out.
     """
-    until = _aware(until) if until else datetime.now(timezone.utc)
-    since = _aware(since) if since else until - timedelta(hours=24)
+    until = as_utc(until) if until else datetime.now(timezone.utc)
+    since = as_utc(since) if since else until - timedelta(hours=24)
     if since >= until:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "`since` must be before `until`.")
     if until - since > MAX_REPORT_WINDOW:
@@ -157,8 +158,8 @@ async def driving_report(
     a look: sustained overspeed, night drives, long idles, a vehicle parked
     for a day or more. Rules are in api/driving.py. Scoped like `/report`.
     """
-    until = _aware(until) if until else datetime.now(timezone.utc)
-    since = _aware(since) if since else until - timedelta(hours=24)
+    until = as_utc(until) if until else datetime.now(timezone.utc)
+    since = as_utc(since) if since else until - timedelta(hours=24)
     if since >= until:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "`since` must be before `until`.")
     if until - since > MAX_DRIVING_WINDOW:
@@ -172,7 +173,3 @@ async def driving_report(
         since=since, until=until, speed_limit_kmh=speed_limit_kmh, devices=devices
     )
 
-
-def _aware(value: datetime) -> datetime:
-    """A timestamp without an offset is read as UTC, like the rest of the API."""
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)

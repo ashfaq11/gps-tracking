@@ -222,3 +222,50 @@ class LevelWatcher:
         changed = level != self.current
         self.current = level
         return changed
+
+
+# "2026-10-22 10:00:00 IST ERROR   [api.error] [3f9a1c0b7e21] it broke" (the
+# API's), "... IST ERROR [gps_gateway.sink] write failed" (the gateway's), or
+# "... IST IN   868720065896205  LOCATION ..." (the packet log's).
+_RECORD = re.compile(r"^(\d{4}-\d{2}-\d{2} \d\d:\d\d:\d\d) IST (\S+)\s*(.*)$")
+_LOGGER = re.compile(r"^\[([^\]]+)\]\s*(?:\[([0-9a-f]{12}|-)\]\s*)?(.*)$", re.S)
+
+
+def read_entries(path: str, max_bytes: int = 5 * 1024 * 1024) -> list[dict]:
+    """
+    A week file's records, newest first: when (UTC), level, which process
+    and logger wrote it, the request id (API only), the message, and the
+    lines after it -- a traceback -- as `details`. Reads at most the last
+    `max_bytes` of the file.
+    """
+    with open(path, "rb") as f:
+        size = f.seek(0, os.SEEK_END)
+        f.seek(max(0, size - max_bytes))
+        lines = f.read().decode("utf-8", errors="replace").splitlines()
+    if size > max_bytes:
+        lines = lines[1:]  # the first may be cut mid-line
+    entries: list[dict] = []
+    for number, line in enumerate(lines, start=1):
+        match = _RECORD.match(line)
+        if not match:
+            if entries:  # a traceback line, or a message's own newline
+                entries[-1]["details"] = (entries[-1]["details"] + "\n" + line).lstrip("\n")
+            continue
+        stamp, first, rest = match.groups()
+        at = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST).astimezone(timezone.utc)
+        entry = {"line": number, "at": at, "level": None, "source": "packets", "logger": None,
+                 "request_id": None, "message": f"{first} {rest}".strip(), "details": ""}
+        if first in LEVELS:
+            entry["level"] = first
+            logger = _LOGGER.match(rest)
+            if logger:
+                entry["logger"], request_id, entry["message"] = logger.groups()
+                entry["request_id"] = request_id if request_id and request_id != "-" else None
+            else:
+                entry["message"] = rest
+            entry["source"] = "gateway" if (entry["logger"] or "").startswith("gps_gateway") else "api"
+        entries.append(entry)
+    for entry in entries:
+        entry["details"] = entry["details"] or None
+    entries.reverse()
+    return entries

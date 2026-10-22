@@ -210,6 +210,15 @@ DEBUG (load balancers poll constantly), 4xx is WARNING, 5xx is ERROR with a
 traceback, but the client only ever sees `{"detail": ..., "request_id": ...}`
 — internal detail never reaches the response.
 
+**Times: stored and sent as UTC, shown in IST.** Every column is
+TIMESTAMPTZ and the gateway decodes GT06 time as UTC. Every timestamp the API
+takes or returns goes through `api/timeutil.py: as_utc` (`schemas.UtcDatetime`
+on all 50-odd fields, and the routers' `since`/`until`): naive means UTC, any
+other offset is converted, so JSON always reads `...Z`. The apps convert to
+IST for display (web `core/format.ts`, native `core/Time.kt`), and push
+bodies end with the event's IST time (`ist_clock`). Keep new timestamp fields
+on `UtcDatetime`.
+
 **Log files: one per week, outside the project, warnings and errors only.**
 `weekly_logs.py` (repo root, copied into both images) is the one place that
 knows the layout: `<log_dir>/19102026_25102026.log` (Monday_Sunday, ddmmyyyy,
@@ -222,8 +231,10 @@ ERROR; `PUT /logs/level` (admin, `api/routers/logs.py`) writes
 `<log_dir>/log-level`, applied by the API at once and by the gateway within
 30 s (`LevelWatcher`), and it outlasts restarts -- the env defaults
 (`API_LOG_LEVEL` / `GATEWAY_LOG_LEVEL`) only apply until it is set. The file
-handler never takes anything below WARNING. `GET /logs` and
-`GET /logs/{name}` read the files; names are validated against the week
+handler never takes anything below WARNING. `GET /logs`,
+`GET /logs/{name}/entries` (parsed records, newest first, paginated, `level`/`q`
+filters -- what the app's and dashboard's Logs screens read) and
+`GET /logs/{name}` (plain text) read the files; names are validated against the week
 pattern, so a request can never reach outside `log_dir`. The gateway's
 per-packet log is off unless `GATEWAY_MESSAGE_LOG=on` (then
 `<week>.packets.log`).
