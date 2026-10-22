@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover
     FASTAPI_AVAILABLE = False
 
 BASE = "/api/v1"
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 
 CIRCLE = {
     "name": "Depot",
@@ -63,11 +63,11 @@ class GeofenceTestCase(unittest.IsolatedAsyncioTestCase):
     async def user_token(self, username: str, devices: list[str]) -> str:
         await self.client.post(
             f"{BASE}/users",
-            json={"username": username, "password": "password123", "role": "user", "devices": devices},
+            json={"username": username, "password": "Password-123", "role": "user", "devices": devices},
             headers=self.auth(self.admin),
         )
         response = await self.client.post(
-            f"{BASE}/auth/login", json={"username": username, "password": "password123"}
+            f"{BASE}/auth/login", json={"username": username, "password": "Password-123"}
         )
         return response.json()["token"]
 

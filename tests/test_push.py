@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover
     FASTAPI_AVAILABLE = False
 
 BASE = "/api/v1"
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 VAPID_PUBLIC = "BK55f33iTFofr0vAv_9l0utN_rbLgnn7MdlQpvFwBsN6Vo6-OJ1ZQVX0B8jr3dR6mTtv_jRMxUV7rSqwt4ev87M"
 VAPID_PRIVATE = "BBJEzn-3ioQOeTiAkXlIn2Y45Nt28A4qa27E7I-ejS0"
 
@@ -105,14 +105,14 @@ class TestSubscribe(PushTestCase):
             f"{BASE}/users",
             json={
                 "username": "dispatcher",
-                "password": "dispatch123",
+                "password": "Dispatch-123",
                 "role": "user",
                 "devices": ["mine"],
             },
             headers=self.auth(admin_token),
         )
         login = await self.client.post(
-            f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+            f"{BASE}/auth/login", json={"username": "dispatcher", "password": "Dispatch-123"}
         )
         user_token = login.json()["token"]
         await self.client.post(

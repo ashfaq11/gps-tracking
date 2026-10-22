@@ -12,7 +12,7 @@ except ImportError:  # pragma: no cover
 
 BASE = "/api/v1"
 API_KEY = "test-secret"
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 FIX = {"device_id": "dev1", "latitude": 12.97, "longitude": 77.59}
 
 
@@ -135,14 +135,14 @@ class TestStatsScoping(unittest.IsolatedAsyncioTestCase):
             f"{BASE}/users",
             json={
                 "username": "dispatcher",
-                "password": "dispatch123",
+                "password": "Dispatch-123",
                 "role": "user",
                 "devices": ["dev1"],
             },
             headers={"Authorization": f"Bearer {admin_token}"},
         )
         user_login = await self.client.post(
-            f"{BASE}/auth/login", json={"username": "dispatcher", "password": "dispatch123"}
+            f"{BASE}/auth/login", json={"username": "dispatcher", "password": "Dispatch-123"}
         )
         self.user_token = user_login.json()["token"]
 

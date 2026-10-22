@@ -23,7 +23,7 @@ T0 = datetime(2026, 9, 27, 8, 30, tzinfo=timezone.utc)
 NIGHT = datetime(2026, 9, 26, 19, 30, tzinfo=timezone.utc)
 BASE = "/api/v1"
 API_KEY = "test-secret"
-ADMIN = {"username": "admin", "password": "adminpassword"}
+ADMIN = {"username": "admin", "password": "Admin-password1"}
 
 
 def drive(start: datetime, speeds: list[int], step_s: int = 10) -> list[ReportFix]:
@@ -182,11 +182,11 @@ class TestDrivingEndpoint(unittest.IsolatedAsyncioTestCase):
         self.admin = {"Authorization": f"Bearer {login.json()['token']}"}
         await self.client.post(
             f"{BASE}/users",
-            json={"username": "owner", "password": "owner1234", "role": "user", "devices": ["dev1"]},
+            json={"username": "owner", "password": "Owner-1234", "role": "user", "devices": ["dev1"]},
             headers=self.admin,
         )
         login = await self.client.post(
-            f"{BASE}/auth/login", json={"username": "owner", "password": "owner1234"}
+            f"{BASE}/auth/login", json={"username": "owner", "password": "Owner-1234"}
         )
         self.owner = {"Authorization": f"Bearer {login.json()['token']}"}
         # Ten minutes each, ending now: dev1 at a steady 50, dev2 at 120.
