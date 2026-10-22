@@ -1315,3 +1315,60 @@ class LogPageOut(BaseModel):
     total: int = Field(description="Records matching the filters, across all pages.")
     pages: int
     entries: list[LogEntryOut]
+
+
+AlertKind = Literal[
+    "moving",
+    "stopped",
+    "ignition_on",
+    "ignition_off",
+    "geofence_enter",
+    "geofence_exit",
+    "overspeed",
+    "harsh_braking",
+    "harsh_acceleration",
+]
+
+
+class AlertOut(BaseModel):
+    """One notification a vehicle raised -- a row of the alerts history."""
+
+    id: int
+    device_id: str
+    kind: AlertKind
+    occurred_at: UtcDatetime = Field(description="When it happened, by the device's own clock.")
+    latitude: float | None = None
+    longitude: float | None = None
+    speed_kmh: int | None = Field(default=None, description="Speed then; for harsh driving, after the change.")
+    from_kmh: int | None = Field(default=None, description="Harsh driving: the speed before.")
+    limit_kmh: int | None = Field(default=None, description="Overspeed: the limit that was crossed.")
+    geofence_id: int | None = None
+    geofence_name: str | None = None
+
+
+class AlertPageOut(BaseModel):
+    """A page of the alerts history, newest first."""
+
+    page: int
+    size: int
+    total: int = Field(description="Alerts matching the filters, across all pages.")
+    pages: int
+    entries: list[AlertOut]
+
+
+class AlertUnreadOut(BaseModel):
+    unread: int = Field(description="Alerts newer than the account's read mark.")
+    seen_id: int = Field(description="The read mark: the newest alert id the account has read.")
+
+
+class AlertSeenIn(BaseModel):
+    seen_id: int = Field(ge=0, description="Everything up to this alert id counts as read.")
+
+
+class SpeedLimitOut(BaseModel):
+    device_id: str
+    limit_kmh: int = Field(description="Overspeed alerts fire when it crosses above this.")
+
+
+class SpeedLimitIn(BaseModel):
+    limit_kmh: int = Field(ge=20, le=200)

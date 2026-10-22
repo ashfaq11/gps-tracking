@@ -179,6 +179,23 @@ unsubscribing are ordinary requests and work anywhere.
 `python -m api.push genkey` mints the `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`
 pair `api/config.py` reads.
 
+**Alerts history is a table the triggers fill, not state on each device.**
+`vehicle_alerts` keeps every notification -- started/stopped, ignition,
+geofence crossings that alert, overspeed, harsh braking/acceleration -- written by
+the same triggers that find them (`record_vehicle_alert()`; the motion,
+`check_geofences`, ignition-flip and `record_driving_alerts` functions), so both
+writers are covered and a phone being off loses nothing. `GET /alerts`
+(`api/routers/alerts.py`) pages it for the web dashboard and the app alike; there
+is deliberately no DELETE, and the apps have no "clear". Kept 90 days
+(`purge_old_alerts`, run nightly by `maintenance.sh`, `ALERT_RETENTION_DAYS`). An
+admin sees everything; anyone else their own vehicles, and a geofence's alerts only
+if they drew it. The read mark behind the unread badge is `alert_reads`, per
+account, so reading on one screen clears the others. Overspeed uses a per-vehicle
+limit (`device_speed_limits`, 80 by default, `PUT /alerts/speed-limits/{id}`);
+the rules (a stop counts after 3 minutes still, overspeed once per 5 minutes,
+harsh = 40 km/h within 15 s) live in SQL only -- the apps no longer detect them.
+`tests/test_alerts_postgres.py` checks the triggers when `TEST_PG_DSN` is set.
+
 **Engine cut-off travels API → Postgres → gateway, never API → gateway.**
 `POST /devices/{id}/relay` (admin-only) inserts a `device_commands` row
 (`RELAY,1#` cut / `RELAY,0#` restore, per the PT06 manual); a trigger

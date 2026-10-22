@@ -24,7 +24,7 @@ from .errors import register_error_handlers
 from .middleware import RequestLoggingMiddleware
 from .live import run_fix_listener
 from .push import run_geofence_listener, run_motion_listener
-from .routers import devices, geofences, health, ingest, live, logs, push, shop, stats, trackers, users
+from .routers import alerts, devices, geofences, health, ingest, live, logs, push, shop, stats, trackers, users
 from .state import close_repository, ensure_repository, init_state
 
 log = logging.getLogger(__name__)
@@ -239,6 +239,7 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     app.include_router(trackers.router, prefix=API_PREFIX)
     app.include_router(shop.router, prefix=API_PREFIX)
     app.include_router(logs.router, prefix=API_PREFIX)
+    app.include_router(alerts.router, prefix=API_PREFIX)
     return app
 
 
