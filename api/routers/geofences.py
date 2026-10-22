@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from ..timeutil import as_utc
 from ..deps import current_user, get_geofences, require_geofences
 from ..geofence_report import summarize_geofences
 from ..geofences_repository import GeofenceFields, GeofenceRepository, GeofenceShape
@@ -126,8 +127,8 @@ async def list_events(
         device_id=device_id,
         after_id=after_id,
         limit=limit,
-        since=_aware(since) if since else None,
-        until=_aware(until) if until else None,
+        since=as_utc(since) if since else None,
+        until=as_utc(until) if until else None,
     )
 
 
@@ -166,8 +167,8 @@ async def geofence_report(
     A geofence or vehicle the caller cannot see reads as an empty report.
     """
     now = datetime.now(timezone.utc)
-    until = _aware(until) if until else now
-    since = _aware(since) if since else until - timedelta(hours=24)
+    until = as_utc(until) if until else now
+    since = as_utc(since) if since else until - timedelta(hours=24)
     if since >= until:
         raise _invalid("`since` must be before `until`.")
     if until - since > MAX_REPORT_WINDOW:
@@ -244,10 +245,6 @@ async def geofence_report(
         ],
     )
 
-
-def _aware(value: datetime) -> datetime:
-    """A timestamp without an offset is read as UTC, like the rest of the API."""
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 @router.get("", response_model=list[GeofenceOut], summary="List geofences")

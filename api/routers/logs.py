@@ -3,7 +3,11 @@ Server logs (admin): the weekly warning/error files the API and the gateway
 write to one folder outside the project (weekly_logs.py), and the log level.
 
     GET /logs                 every week's file, newest first
-    GET /logs/{name}          one file as text (?tail=, ?level=)
+    GET /logs/{name}/entries  one file's records, newest first, a page at a
+                              time (?page=, ?size=, ?level=, ?q=) -- what the
+                              apps' Logs screens read
+    GET /logs/{name}          one file as plain text (?tail=, ?level=), to
+                              download or grep
     GET /logs/level           the level now
     PUT /logs/level           change it -- the API at once, the gateway
                               within 30 s, kept across restarts
@@ -16,11 +20,11 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
 
-from weekly_logs import LEVEL_FILE, list_logs, log_path, read_level, write_level
+from weekly_logs import LEVEL_FILE, list_logs, log_path, read_entries, read_level, write_level
 
 from ..config import ApiConfig
 from ..deps import get_config, require_admin
-from ..schemas import LogFileOut, LogLevelIn, LogLevelOut
+from ..schemas import LogFileOut, LogLevelIn, LogLevelOut, LogPageOut
 
 router = APIRouter(prefix="/logs", tags=["logs"], dependencies=[Depends(require_admin)])
 
@@ -64,6 +68,52 @@ async def set_level(payload: LogLevelIn, config: ApiConfig = Depends(get_config)
             log.error("Could not save the log level to %r: %s", config.log_dir, exc)
     logging.getLogger().setLevel(payload.level)
     return LogLevelOut(level=payload.level, saved=saved)
+
+
+@router.get(
+    "/{name}/entries",
+    response_model=LogPageOut,
+    summary="One week's records, a page at a time",
+    responses={404: {"description": "No such file."}},
+)
+async def read_entries_page(
+    name: str,
+    page: int = Query(default=1, ge=1, description="1 is the newest records."),
+    size: int = Query(default=50, ge=1, le=200),
+    level: str | None = Query(default=None, pattern="^(ERROR|WARNING)$", description="Only this level."),
+    q: str | None = Query(
+        default=None, max_length=100, description="Only records containing this text (any case), "
+        "in the message, logger, request id or traceback."
+    ),
+    config: ApiConfig = Depends(get_config),
+) -> LogPageOut:
+    """Newest first. A request id from an error the app showed (`X-Request-ID`)
+    finds every line of that request: pass it as `q`."""
+    path = log_path(config.log_dir, name) if config.log_dir else None
+    if path is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"No log file {name}")
+    entries = read_entries(path, MAX_READ_BYTES)
+    if level:
+        entries = [e for e in entries if e["level"] == level]
+    if q:
+        needle = q.lower()
+        entries = [
+            e
+            for e in entries
+            if needle in " ".join(
+                filter(None, [e["message"], e["logger"], e["request_id"], e["details"]])
+            ).lower()
+        ]
+    total = len(entries)
+    start = (page - 1) * size
+    return LogPageOut(
+        name=name,
+        page=page,
+        size=size,
+        total=total,
+        pages=max(1, -(-total // size)),
+        entries=entries[start : start + size],
+    )
 
 
 @router.get(

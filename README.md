@@ -327,6 +327,7 @@ Reading them over HTTP (admin only):
 | Endpoint | What |
 |---|---|
 | `GET /api/v1/logs` | the week files, newest first, with sizes |
+| `GET /api/v1/logs/{name}/entries?page=1&size=50&level=ERROR&q=text` | one file's records parsed -- time (UTC), level, API or gateway, logger, request id, message, traceback -- newest first, a page at a time; `q` matches any text, a request id finds that request. What the app's and dashboard's **Server logs** screens read |
 | `GET /api/v1/logs/{name}?tail=1000&level=ERROR` | one file as text: the newest `tail` lines, optionally only `ERROR` or `WARNING` records (with their tracebacks) |
 | `GET /api/v1/logs/level` / `PUT /api/v1/logs/level` | the level now / change it |
 
