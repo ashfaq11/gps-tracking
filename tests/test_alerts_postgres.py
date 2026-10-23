@@ -62,6 +62,53 @@ class TestAlertTriggers(unittest.IsolatedAsyncioTestCase):
         await self.fixes("stop", [(0, 40), (60, 0), (120, 0), (180, 0), (240, 0), (300, 0)])
         self.assertEqual(await self.kinds("stop"), ["stopped"])  # once, not at every stopped fix
 
+    async def stamp(self, device, rows):
+        """rows: (minutes ago, speed) -- fixes at fixed times before now."""
+        for ago, speed in rows:
+            await self.pool.execute(
+                "INSERT INTO device_locations (device_id, latitude, longitude, speed_kmh, satellites, gps_fixed, received_at) "
+                "VALUES ($1, 12.9, 77.6, $2, 8, true, now() - make_interval(secs => $3))",
+                PREFIX + device, speed, float(ago * 60),
+            )
+
+    async def test_a_stop_is_announced_by_the_clock_without_a_new_fix(self):
+        # Moving until 6 min ago, one stationary fix at 5.5 min ago, then the tracker is quiet.
+        await self.stamp("quiet", [(8, 40), (6, 30), (5.5, 0)])
+        self.assertEqual(await self.kinds("quiet"), [])  # the trigger saw no fix three minutes on
+        n = await self.pool.fetchval("SELECT announce_due_stops()")
+        self.assertGreaterEqual(n, 1)
+        self.assertEqual(await self.kinds("quiet"), ["stopped"])
+        # Once: asking again announces nothing, and no row is added.
+        await self.pool.fetchval("SELECT announce_due_stops()")
+        self.assertEqual(await self.kinds("quiet"), ["stopped"])
+        # It is stamped at last-moving + 3 minutes, not at the time it was found.
+        gap = await self.pool.fetchval(
+            "SELECT (SELECT occurred_at FROM vehicle_alerts WHERE device_id = $1 AND kind = 'stopped') - "
+            "(SELECT max(received_at) FROM device_locations WHERE device_id = $1 AND speed_kmh > 0)", PREFIX + "quiet",
+        )
+        self.assertEqual(gap.total_seconds(), 180)
+
+    async def test_not_before_three_minutes_and_not_while_moving(self):
+        await self.stamp("early", [(4, 40), (2, 30), (1.5, 0)])  # moved 2 min ago: not yet
+        await self.stamp("rolling", [(10, 0), (5, 30), (0.1, 40)])  # still going
+        await self.stamp("old", [(60, 40), (59, 0)])  # a stop an hour ago is not announced now
+        await self.pool.fetchval("SELECT announce_due_stops()")
+        for device in ("early", "rolling", "old"):
+            # ("rolling" did raise "moving": it was parked for ten minutes first.)
+            self.assertNotIn("stopped", await self.kinds(device), device)
+
+    async def test_a_fix_after_the_clock_announced_it_does_not_announce_it_again(self):
+        await self.stamp("both", [(8, 40), (6, 30), (5.5, 0)])
+        await self.pool.fetchval("SELECT announce_due_stops()")
+        await self.stamp("both", [(0, 0)])  # the parked tracker's next report
+        self.assertEqual(await self.kinds("both"), ["stopped"])
+        # ...and the other way round: the trigger got there first.
+        await self.stamp("trigger", [(10, 40), (9, 30), (8, 0), (5, 0), (0.2, 0)])
+        before = await self.kinds("trigger")
+        await self.pool.fetchval("SELECT announce_due_stops()")
+        self.assertEqual(await self.kinds("trigger"), before)
+        self.assertEqual(before, ["stopped"])
+
     async def test_overspeed_once_per_crossing_and_harsh_driving(self):
         await self.fixes("drive", [(0, 70), (10, 95), (20, 96), (30, 20), (40, 70), (50, 0, 0)])
         self.assertEqual(

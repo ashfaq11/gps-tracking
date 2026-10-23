@@ -24,6 +24,7 @@ from .errors import register_error_handlers
 from .middleware import RequestLoggingMiddleware
 from .live import run_fix_listener
 from .push import run_geofence_listener, run_motion_listener
+from .stops import run_stop_watcher
 from .routers import alerts, devices, geofences, health, ingest, live, logs, push, shop, stats, trackers, users
 from .state import close_repository, ensure_repository, init_state
 
@@ -161,6 +162,10 @@ async def lifespan(app: FastAPI):
         listener_tasks.append(
             asyncio.create_task(run_fix_listener(config, app.state.live_connections))
         )
+        if app.state.pool is not None and config.stop_check_seconds > 0:
+            listener_tasks.append(
+                asyncio.create_task(run_stop_watcher(app.state.pool, config.stop_check_seconds))
+            )
         if config.vapid_public_key and config.vapid_private_key:
             listener_tasks.append(asyncio.create_task(run_motion_listener(config, app.state.users)))
             listener_tasks.append(

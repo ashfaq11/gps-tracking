@@ -450,11 +450,15 @@ BEGIN
         -- traffic light or a jam reads 0 km/h too, and is not a stop. It
         -- fires on the first fix past that mark, once: a later stopped fix
         -- finds the previous one already past it. A tracker that goes quiet
-        -- before the mark is never announced stopped (its ignition-off
-        -- alert still is).
+        -- before the mark is announced by announce_due_stops() instead.
         IF last_moving_at IS NULL
            OR NEW.received_at - last_moving_at < INTERVAL '3 minutes'
-           OR previous_at - last_moving_at >= INTERVAL '3 minutes' THEN
+           OR previous_at - last_moving_at >= INTERVAL '3 minutes'
+           -- announce_due_stops() already said so, without waiting for this fix
+           OR EXISTS (
+               SELECT 1 FROM vehicle_alerts
+               WHERE device_id = NEW.device_id AND kind = 'stopped' AND occurred_at > last_moving_at
+           ) THEN
             RETURN NEW;
         END IF;
     END IF;
@@ -1305,6 +1309,73 @@ BEGIN
 END
 $grant_shop$;
 
+
+-- ---------------------------------------------------------------------------
+-- Stopped, without waiting for the next position.
+--
+-- notify_vehicle_motion can only act when a fix arrives, and a parked tracker
+-- reports every few minutes (its T2 interval), so "stopped" came up to a full
+-- parked interval after the three minutes were over. This is the same alert
+-- found by the clock instead: a vehicle whose newest fix reads 0 km/h and
+-- whose last moving fix was `p_after` ago, with no "stopped" since, is
+-- announced at last-moving + p_after -- the same alert, row and push, the
+-- trigger would have made, and it makes sure the trigger does not make it
+-- again. Run every few seconds by the API process (api/stops.py). Only stops
+-- that began within `p_window` are looked at, so a stop missed while nothing
+-- was running is not announced hours late (nor again once old alerts are purged).
+-- ---------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION announce_due_stops(
+    p_after INTERVAL DEFAULT INTERVAL '3 minutes',
+    p_window INTERVAL DEFAULT INTERVAL '15 minutes'
+) RETURNS INT AS $$
+DECLARE
+    stop    RECORD;
+    n       INT := 0;
+    at_time TIMESTAMPTZ;
+BEGIN
+    -- One announcer at a time, however many API processes there are.
+    IF NOT pg_try_advisory_xact_lock(hashtext('announce_due_stops')) THEN
+        RETURN 0;
+    END IF;
+
+    FOR stop IN
+        SELECT l.device_id, l.latitude, l.longitude, m.last_moving_at
+        FROM (
+            SELECT DISTINCT ON (device_id) device_id, latitude, longitude, speed_kmh, received_at
+            FROM device_locations
+            WHERE received_at > now() - p_window - p_after
+            ORDER BY device_id, received_at DESC, id DESC
+        ) l
+        JOIN LATERAL (
+            SELECT max(d.received_at) AS last_moving_at
+            FROM device_locations d
+            WHERE d.device_id = l.device_id AND d.speed_kmh > 0
+              AND d.received_at > now() - p_window - p_after
+        ) m ON TRUE
+        WHERE COALESCE(l.speed_kmh, 0) = 0
+          AND m.last_moving_at IS NOT NULL
+          AND m.last_moving_at < l.received_at
+          AND m.last_moving_at <= now() - p_after
+          AND NOT EXISTS (
+              SELECT 1 FROM vehicle_alerts a
+              WHERE a.device_id = l.device_id AND a.kind = 'stopped' AND a.occurred_at > m.last_moving_at
+          )
+    LOOP
+        at_time := stop.last_moving_at + p_after;
+        PERFORM record_vehicle_alert(stop.device_id, 'stopped', at_time,
+                                     stop.latitude, stop.longitude, 0);
+        PERFORM pg_notify('vehicle_motion', json_build_object(
+            'device_id', stop.device_id,
+            'moving', FALSE,
+            'speed_kmh', 0,
+            'received_at', at_time
+        )::text);
+        n := n + 1;
+    END LOOP;
+    RETURN n;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- ---------------------------------------------------------------------------
 -- Driving alerts: overspeed and harsh braking / acceleration.
