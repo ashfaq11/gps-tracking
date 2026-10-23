@@ -194,6 +194,13 @@ account, so reading on one screen clears the others. Overspeed uses a per-vehicl
 limit (`device_speed_limits`, 80 by default, `PUT /alerts/speed-limits/{id}`);
 the rules (a stop counts after 3 minutes still, overspeed once per 5 minutes,
 harsh = 40 km/h within 15 s) live in SQL only -- the apps no longer detect them.
+A stop is also announced *by the clock*: a parked tracker reports only every few
+minutes, so the trigger alone said "stopped" up to a whole parked interval late.
+`announce_due_stops()` (SQL, called every `STOP_CHECK_SECONDS`=15 by
+`api/stops.py: run_stop_watcher`, a task of the API process) finds vehicles whose
+newest fix reads 0 km/h and whose last moving fix is 3 minutes old, and writes the
+same alert at last-moving + 3 min and the same `vehicle_motion` NOTIFY; it takes an
+advisory lock, and the trigger skips a stop it already announced.
 `tests/test_alerts_postgres.py` checks the triggers when `TEST_PG_DSN` is set.
 
 **Engine cut-off travels API → Postgres → gateway, never API → gateway.**

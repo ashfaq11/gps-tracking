@@ -54,6 +54,9 @@ class ApiConfig:
     # connection is handed to a different client between statements. Set 0
     # when connecting through one.
     pg_statement_cache_size: int = 100
+    # How often the API looks for vehicles that have just been stopped for
+    # three minutes (announce_due_stops in sql/schema.sql). 0 switches it off.
+    stop_check_seconds: float = 15.0
     cors_origins: list[str] = field(default_factory=list)
     # `python -m api` also writes warnings and errors to the week's file in
     # log_dir -- <Monday>_<Sunday>.log, shared with the gateway, the last
@@ -89,6 +92,7 @@ class ApiConfig:
             log_retention_weeks=retention_weeks(env.get("API_LOG_RETENTION_WEEKS")),
             pg_pool_min=int(env.get("PG_POOL_MIN", cls.pg_pool_min)),
             pg_pool_max=int(env.get("PG_POOL_MAX", cls.pg_pool_max)),
+            stop_check_seconds=float(env.get("STOP_CHECK_SECONDS", cls.stop_check_seconds)),
             pg_statement_cache_size=int(
                 env.get("PG_STATEMENT_CACHE_SIZE", cls.pg_statement_cache_size)
             ),
