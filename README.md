@@ -500,7 +500,7 @@ python3 tools/simulate_device.py --host <your-public-ip> --port 5023 --pings 3
 | `PG_POOL_MIN` / `PG_POOL_MAX` | `1` / `10` api, `1` / `5` gateway | both |
 | `PG_STATEMENT_CACHE_SIZE` | `100` | both — set `0` behind a transaction pooler |
 | `API_SLOW_REQUEST_MS` | `1000` | api, threshold for a slow-request warning |
-| `SESSION_TTL_HOURS` | `12` | api, how long a dashboard sign-in lasts |
+| `SESSION_TTL_HOURS` | `720` | api, how long a sign-in lasts (the phone app's background alerts run on it) |
 | `BOOTSTRAP_ADMIN_USERNAME` | *(unset)* | api, seeds the first admin |
 | `BOOTSTRAP_ADMIN_PASSWORD` | *(unset)* | api, only used while no account exists |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | *(unset — push disabled)* | api, from `python -m api.push genkey` |

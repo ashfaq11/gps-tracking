@@ -28,8 +28,9 @@ class ApiConfig:
     # entirely when this is unset, so it can never be left open by accident.
     ingest_api_key: str | None = None
     max_page_size: int = 1000
-    # How long a dashboard sign-in lasts.
-    session_ttl_hours: int = 12
+    # How long a sign-in lasts (30 days): the phone app keeps its alerts running in the
+    # background on that token, so a short one silently ended them.
+    session_ttl_hours: int = 720
     # Seeds the first admin when the users table is empty, so a fresh
     # database is reachable at all. Ignored once any account exists.
     bootstrap_admin_username: str | None = None
