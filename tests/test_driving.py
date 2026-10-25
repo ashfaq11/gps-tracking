@@ -78,7 +78,7 @@ class TestScoreDevice(unittest.TestCase):
         self.assertEqual(result.events, [])
 
     def test_sudden_stop_and_start_between_close_fixes(self):
-        result = score(drive(T0, [60] * 30 + [10] + [10] * 5 + [55] + [55] * 30))
+        result = score(drive(T0, [60] * 30 + [10] + [10] * 5 + [60] + [60] * 30))
         self.assertEqual((result.sudden_stops, result.sudden_starts), (1, 1))
         self.assertLess(result.score, 100)
 
