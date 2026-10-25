@@ -1384,8 +1384,8 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 -- applies to history), now found here once so every screen agrees:
 --   overspeed  -- the speed crosses above the vehicle's limit (80 unless set
 --                 in device_speed_limits); once per 5 minutes per vehicle.
---   harsh      -- the speed changes by 40 km/h or more between two fixes at
---                 most 15 seconds apart (braking down, acceleration up).
+--   harsh      -- the speed changes by 50 km/h or more between two fixes at
+--                 most 10 seconds apart (braking down, acceleration up).
 -- Fixes without a GPS lock, or reading over 200 km/h, are junk and ignored,
 -- and "previous" means strictly earlier, as in notify_vehicle_motion.
 -- ---------------------------------------------------------------------------
@@ -1438,7 +1438,7 @@ BEGIN
     END IF;
 
     gap := EXTRACT(EPOCH FROM (at_new - at_prev));
-    IF gap > 0 AND gap <= 15 AND abs(NEW.speed_kmh - prev.speed_kmh) >= 40 THEN
+    IF gap > 0 AND gap <= 10 AND abs(NEW.speed_kmh - prev.speed_kmh) >= 50 THEN
         PERFORM record_vehicle_alert(
             NEW.device_id,
             CASE WHEN NEW.speed_kmh < prev.speed_kmh THEN 'harsh_braking' ELSE 'harsh_acceleration' END,

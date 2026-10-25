@@ -452,7 +452,7 @@ class DeviceDriving(BaseModel):
     overspeed_minutes: float = Field(description="Driving time above speed_limit_kmh.")
     night_minutes: float = Field(description="Driving time between 23:00 and 05:00 IST.")
     sudden_stops: int = Field(
-        description="Speed falling 40+ km/h between two fixes at most 15 s apart -- a firm "
+        description="Speed falling 50+ km/h between two fixes at most 10 s apart -- a firm "
         "stop as a ten-second tracker sees it, not accelerometer-grade harsh braking."
     )
     sudden_starts: int

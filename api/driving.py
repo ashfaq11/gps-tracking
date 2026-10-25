@@ -65,12 +65,12 @@ IST = timezone(timedelta(hours=5, minutes=30))
 NIGHT_START_HOUR = 23
 NIGHT_END_HOUR = 5
 
-SUDDEN_KMH = 40
-SUDDEN_MAX_GAP = timedelta(seconds=15)
+SUDDEN_KMH = 50
+SUDDEN_MAX_GAP = timedelta(seconds=10)
 
 MIN_SCORED_DRIVING = timedelta(minutes=5)
 OVERSPEED_WEIGHT, OVERSPEED_CAP = 200, 40
-SUDDEN_WEIGHT, SUDDEN_CAP = 5, 30
+SUDDEN_WEIGHT, SUDDEN_CAP = 2.5, 20
 NIGHT_WEIGHT, NIGHT_CAP = 30, 15
 IDLE_WEIGHT, IDLE_CAP = 30, 15
 # Sudden stops are counted per 100 km; below this a single one would be

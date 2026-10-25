@@ -193,7 +193,7 @@ if they drew it. The read mark behind the unread badge is `alert_reads`, per
 account, so reading on one screen clears the others. Overspeed uses a per-vehicle
 limit (`device_speed_limits`, 80 by default, `PUT /alerts/speed-limits/{id}`);
 the rules (a stop counts after 3 minutes still, overspeed once per 5 minutes,
-harsh = 40 km/h within 15 s) live in SQL only -- the apps no longer detect them.
+harsh = 50 km/h within 10 s) live in SQL only -- the apps no longer detect them.
 A stop is also announced *by the clock*: a parked tracker reports only every few
 minutes, so the trigger alone said "stopped" up to a whole parked interval late.
 `announce_due_stops()` (SQL, called every `STOP_CHECK_SECONDS`=15 by
