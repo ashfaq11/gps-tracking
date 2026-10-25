@@ -126,6 +126,25 @@ class TestAlertTriggers(unittest.IsolatedAsyncioTestCase):
         await self.pool.execute("SELECT record_ignition($1, true, $2)", device, T0 + timedelta(minutes=5))
         self.assertEqual(await self.kinds("ign"), ["ignition_on"])
 
+    async def test_an_ignition_alert_is_placed_where_the_vehicle_last_was(self):
+        await self.fixes("here", [(0, 30), (60, 0)])
+        device = PREFIX + "here"
+        await self.pool.execute("SELECT record_ignition($1, true, $2)", device, T0 + timedelta(seconds=90))
+        await self.pool.execute("SELECT record_ignition($1, false, $2)", device, T0 + timedelta(minutes=5))
+        row = await self.pool.fetchrow(
+            "SELECT latitude, longitude FROM vehicle_alerts WHERE device_id = $1 AND kind = 'ignition_off'", device
+        )
+        self.assertEqual((row["latitude"], row["longitude"]), (12.9, 77.6))
+
+    async def test_an_ignition_alert_with_no_fix_has_no_place_rather_than_failing(self):
+        device = PREFIX + "nowhere"
+        await self.pool.execute("SELECT record_ignition($1, true, $2)", device, T0)
+        await self.pool.execute("SELECT record_ignition($1, false, $2)", device, T0 + timedelta(minutes=5))
+        row = await self.pool.fetchrow(
+            "SELECT latitude, longitude FROM vehicle_alerts WHERE device_id = $1 AND kind = 'ignition_off'", device
+        )
+        self.assertEqual((row["latitude"], row["longitude"]), (None, None))
+
     async def test_reading_scopes_filters_and_marks_read(self):
         from api.alerts_repository import AlertViewer
 

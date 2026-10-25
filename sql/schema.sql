@@ -624,12 +624,28 @@ CREATE TRIGGER device_status_log_flip
 
 -- Ignition switches are alerts too: each flip (not the first report, which
 -- only says where it stands) is a row of the alerts history.
+-- A heartbeat has no position, so the alert is placed where the vehicle last
+-- was (its newest usable fix at or before the switch): the apps open it on a
+-- map like any other alert. No such fix: no place, and the apps look one up.
 CREATE OR REPLACE FUNCTION alert_ignition_change() RETURNS trigger AS $$
+DECLARE
+    here RECORD;
 BEGIN
+    SELECT latitude, longitude INTO here
+    FROM device_locations
+    WHERE device_id = NEW.device_id
+      AND received_at <= NEW.ignition_changed_at
+      AND gps_fixed IS NOT FALSE
+      AND NOT (latitude = 0 AND longitude = 0)
+    ORDER BY received_at DESC, id DESC
+    LIMIT 1;
+
     PERFORM record_vehicle_alert(
         NEW.device_id,
         CASE WHEN NEW.ignition THEN 'ignition_on' ELSE 'ignition_off' END,
-        NEW.ignition_changed_at
+        NEW.ignition_changed_at,
+        here.latitude,
+        here.longitude
     );
     RETURN NEW;
 END;
