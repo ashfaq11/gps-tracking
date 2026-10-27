@@ -166,7 +166,10 @@ class DeviceOut(BaseModel):
         "has been named or claimed but has never actually reported a position -- see "
         "fix_count, which is 0 in that case.",
     )
-    fix_count: int = Field(description="Total rows stored for this device.")
+    fix_count: int = Field(
+        description="Fixes received from this device in the last 24 hours (a count of every "
+        "stored row would scan the table on each dashboard load)."
+    )
     subscription_end_date: UtcDatetime | None = Field(
         default=None,
         description="When this device's tracking access ends. Null if it was never "

@@ -364,12 +364,13 @@ class InMemoryLocationRepository:
             if device_ids is not None and row.device_id not in device_ids:
                 continue
             by_device.setdefault(row.device_id, []).append(row)
+        recent_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
         return sorted(
             (
                 DeviceOut(
                     device_id=device_id,
                     last_seen=max(r.received_at for r in rows),
-                    fix_count=len(rows),
+                    fix_count=sum(1 for r in rows if r.received_at > recent_cutoff),
                     subscription_end_date=self._sub_end_date(device_id),
                     subscription_status=self._sub_status(device_id),
                     installed_at=self._device_subscriptions.get(device_id, {}).get("installed_at"),
@@ -747,36 +748,63 @@ class PostgresLocationRepository:
 
     async def list_devices(self, device_ids: frozenset[str] | None = None) -> list[DeviceOut]:
         fix_time_sql = _FIX_TIME_SQL.format(t="dl")
+        # Every number here is read off an index, a device at a time, never by
+        # grouping the whole table: device_locations holds months of fixes and
+        # this runs on every dashboard load. The device list comes from walking
+        # the (device_id, received_at) index one distinct device at a time; the
+        # newest fix, the newest moving fix and the first fix are each a single
+        # index probe (the moving one has its own partial index); the fix count
+        # only covers the last day.
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""
-                SELECT dl.device_id,
-                       MAX(dl.received_at)                AS last_seen,
-                       COUNT(*)                             AS fix_count,
-                       MAX(ds.subscription_end_date)        AS subscription_end_date,
-                       MAX(ds.installed_at)                 AS installed_at,
-                       MAX(ds.sim_expiry_date)              AS sim_expiry_date,
-                       MAX(ds.name)                         AS name,
-                       COALESCE(MAX(dm.marker_code), 'car') AS icon,
+                WITH RECURSIVE ids(device_id) AS (
+                    (SELECT device_id FROM device_locations ORDER BY device_id LIMIT 1)
+                    UNION ALL
+                    SELECT (SELECT dl.device_id FROM device_locations dl
+                            WHERE dl.device_id > ids.device_id
+                            ORDER BY dl.device_id LIMIT 1)
+                    FROM ids WHERE ids.device_id IS NOT NULL
+                )
+                SELECT d.device_id,
+                       newest.received_at                   AS last_seen,
+                       recent.fix_count                     AS fix_count,
+                       ds.subscription_end_date             AS subscription_end_date,
+                       ds.installed_at                      AS installed_at,
+                       ds.sim_expiry_date                   AS sim_expiry_date,
+                       ds.name                              AS name,
+                       COALESCE(dm.marker_code, 'car')      AS icon,
                        -- Last seen moving, or the very first fix if it has
-                       -- never moved -- one aggregate alongside the others
-                       -- already in this GROUP BY, not a second round trip.
-                       -- By fix time, so a late-uploaded backlog counts
-                       -- when it was driven, not when it arrived.
-                       COALESCE(
-                           MAX({fix_time_sql}) FILTER (WHERE dl.speed_kmh > 0),
-                           MIN({fix_time_sql})
-                       )                                     AS halted_since,
-                       -- At most one device_status row per device, so these
-                       -- aggregates only unwrap it for the GROUP BY.
-                       bool_or(st.ignition)                 AS ignition,
-                       MAX(st.ignition_changed_at)          AS ignition_changed_at
-                FROM device_locations dl
-                LEFT JOIN device_subscriptions ds ON ds.device_id = dl.device_id
-                LEFT JOIN device_markers dm ON dm.device_id = dl.device_id
-                LEFT JOIN device_status st ON st.device_id = dl.device_id
-                WHERE ($1::text[] IS NULL OR dl.device_id = ANY($1::text[]))
-                GROUP BY dl.device_id
+                       -- never moved. By fix time, so a late-uploaded backlog
+                       -- counts when it was driven, not when it arrived.
+                       COALESCE(moving.fix_time, first.fix_time) AS halted_since,
+                       st.ignition                          AS ignition,
+                       st.ignition_changed_at               AS ignition_changed_at
+                FROM (SELECT device_id FROM ids
+                      WHERE device_id IS NOT NULL
+                        AND ($1::text[] IS NULL OR device_id = ANY($1::text[]))) d
+                CROSS JOIN LATERAL (
+                    SELECT received_at FROM device_locations
+                    WHERE device_id = d.device_id
+                    ORDER BY received_at DESC LIMIT 1
+                ) newest
+                CROSS JOIN LATERAL (
+                    SELECT count(*) AS fix_count FROM device_locations
+                    WHERE device_id = d.device_id AND received_at > now() - interval '24 hours'
+                ) recent
+                LEFT JOIN LATERAL (
+                    SELECT {fix_time_sql} AS fix_time FROM device_locations dl
+                    WHERE dl.device_id = d.device_id AND dl.speed_kmh > 0
+                    ORDER BY dl.received_at DESC LIMIT 1
+                ) moving ON true
+                LEFT JOIN LATERAL (
+                    SELECT {fix_time_sql} AS fix_time FROM device_locations dl
+                    WHERE dl.device_id = d.device_id
+                    ORDER BY dl.received_at ASC LIMIT 1
+                ) first ON true
+                LEFT JOIN device_subscriptions ds ON ds.device_id = d.device_id
+                LEFT JOIN device_markers dm ON dm.device_id = d.device_id
+                LEFT JOIN device_status st ON st.device_id = d.device_id
                 ORDER BY last_seen DESC
                 """,
                 list(device_ids) if device_ids is not None else None,

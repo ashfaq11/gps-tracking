@@ -44,6 +44,13 @@ ALTER TABLE device_locations ADD COLUMN IF NOT EXISTS ignition BOOLEAN;
 CREATE INDEX IF NOT EXISTS device_locations_device_time_idx
     ON device_locations (device_id, received_at DESC);
 
+-- The device list asks "when did this vehicle last move?" for every vehicle on
+-- every load. Over the full index that walks back through a long-parked
+-- vehicle's stationary fixes; this one holds only the moving ones, so it is a
+-- single probe however long it has been parked.
+CREATE INDEX IF NOT EXISTS device_locations_moving_idx
+    ON device_locations (device_id, received_at DESC) WHERE speed_kmh > 0;
+
 
 -- ---------------------------------------------------------------------------
 -- Dashboard accounts.

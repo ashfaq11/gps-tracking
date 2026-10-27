@@ -256,7 +256,8 @@ async def update_device_profile(
 ) -> DeviceProfileOut:
     """
     Cosmetic only -- not billing state (see `.../subscription` for that) and
-    not an allowlist (there isn't one). Any signed-in account may rename or
+    not the gateway's allowlist (`device_allowlist`, which decides which
+    trackers may connect at all and is managed by admins). Any signed-in account may rename or
     re-icon a device it can see; this is personalization, the same trust
     level as choosing a UI language, not an admin action.
 
